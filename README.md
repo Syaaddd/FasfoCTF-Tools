@@ -82,7 +82,8 @@ FASFO auto-checks for these tools on first run (`fasfo --deps`):
 | **Crypto: z3-solver** | `z3-solver` | `pip3 install z3-solver` | SMT solver for reverse crypto |
 | **Crypto: SageMath** | `sage` | `sagemath` | RSA factoring, elliptic curves, DLP |
 | **Crypto: RsaCtfTool** | `RsaCtfTool` | Manual install | RSA multi-attack auto-solver |
-| **Stego: stegcrack** | `stegcrack` | `pip3 install stegcrack` | Steghide brute-force password cracker |
+| **Stego: stegcrack** | `stegcrack` | `pip3 install stegcrack` | Steghide brute-force password cracker (Python) |
+| **Stego: stegseek** | `stegseek` | `sudo apt install stegseek` | **RECOMMENDED** — C++ native steghide cracker, much faster than stegcrack |
 | **Extras** | `stegsolve.jar` | Manual download | GUI steganalysis tool |
 
 #### Install All Common Dependencies
@@ -93,7 +94,7 @@ sudo apt install file binutils binwalk foremost libimage-exiftool-perl \
                  zsteg steghide pngcheck tshark unrar p7zip-full \
                  fcrackzip john whois bind9-dnsutils perl ffmpeg gawk \
                  reglookup libevtx-utils scalpel sleuthkit zeek \
-                 bsdmainutils sonic-visualiser openssl hashcat sagemath
+                 bsdmainutils sonic-visualiser openssl hashcat sagemath stegseek
 
 # Python tools
 pip3 install volatility3 Pillow numpy pycryptodome hashpumpy z3-solver stegcrack
@@ -285,7 +286,8 @@ Detects and extracts hidden data from images and audio.
 
 #### JPEG Files
 - **steghide** — Extracts hidden data (tries empty passphrase first)
-- **stegcrack** — Brute-force steghide password using wordlists (rockyou.txt), with progress display and auto-extraction on success
+- **stegseek** — **RECOMMENDED** — C++ native steghide cracker, significantly faster than stegcrack. Uses rockyou.txt wordlist with rapid GPU-like speed. Supports `--seed` mode for steghide file detection without wordlist.
+- **stegcrack** — Python-based steghide brute-force password cracker using wordlists (rockyou.txt), with progress display and auto-extraction on success
 - **outguess** — Alternative steganography extraction
 
 #### Audio Files
@@ -1088,13 +1090,15 @@ At the end of each scan, FASFO displays:
 24. **Hash cracking** — GPU-accelerated hashcat integration with auto-detection of hash types
 25. **RsaCtfTool integration** — Multi-attack RSA solver (small e, Wiener, Hastad, common factor, etc.)
 26. **Stegcrack integration** — Automated steghide password brute-forcing with rockyou.txt wordlist, progress display, and auto-extraction
+27. **Stegseek integration** — C++ native steghide cracker (MUCH faster than stegcrack), with --seed mode for steghide detection without wordlist
+28. **Decode engine optimization** — Caesar brute force now uses single python3 spawn for all 24 ROT shifts (instead of 24 separate spawns)
 
 ---
 
 ## 🗂️ Project Structure
 
 ```
-fasfo.sh              # Main script (single-file tool, 6700+ lines)
+fasfo.sh              # Main script (single-file tool, 7100+ lines)
 plan.txt              # Development roadmap
 Pl4n.png              # Architecture diagram
 README.md             # This file
@@ -1146,8 +1150,9 @@ export DISPLAY=:0
 - 🆕 **Z3 SMT Solver** — Symbolic execution for reverse crypto challenges
 - 🆕 **OpenSSL Integration** — Certificate analysis, RSA key inspection, AES encrypt/decrypt utilities
 - 🆕 **Crypto tool dependency check** — New "Crypto Tools (v5.0.0)" section in `--deps`
-- 🆕 **Stegcrack integration** — Steghide brute-force password cracker using wordlists (rockyou.txt), with progress display and auto-extraction on success
-- 🆕 **Total codebase** — 6900+ lines of Bash
+- 🆕 **Stegseek integration** — C++ native steghide cracker (much faster than stegcrack), with --seed mode for detection without wordlist
+- 🆕 **Decode engine optimization** — Caesar brute force uses single python3 spawn for all 24 ROT shifts
+- 🆕 **Total codebase** — 7100+ lines of Bash
 
 **Changelog v4.0.0:**
 - 🆕 **4 Advanced Modules** — Deep forensics analysis for complex CTF challenges

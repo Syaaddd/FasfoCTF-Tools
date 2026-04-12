@@ -41,6 +41,10 @@ elif command -v stegCrack    &>/dev/null; then STEGCRACK_CMD="stegCrack"
 elif python3 -c "import stegcrack" &>/dev/null 2>&1; then STEGCRACK_CMD="python3 -m stegcrack"
 fi
 
+# stegseek: fast steghide cracker (C++ native, jauh lebih cepat dari stegcrack)
+STEGSEEK_CMD=""
+if command -v stegseek &>/dev/null; then STEGSEEK_CMD="stegseek"; fi
+
 # wordlist: cari rockyou.txt di lokasi umum
 WORDLIST=""
 for _w in "/usr/share/wordlists/rockyou.txt" \
@@ -191,27 +195,34 @@ decode_string() {
   fi
 
   # ── 7. CAESAR BRUTE FORCE (ROT 1-25) ─────────────
-  local best_rot="" best_score=0
-  for shift in {1..25}; do
-    [[ "$shift" -eq 13 ]] && continue  # skip ROT13 sudah di atas
-    local rotN
-    rotN=$(echo "$raw" | python3 -c "
-import sys
-s=sys.stdin.read().rstrip()
-n=$shift
-r=''
-for c in s:
-    if c.isalpha():
-        base=ord('A') if c.isupper() else ord('a')
-        r+=chr((ord(c)-base+n)%26+base)
-    else:
-        r+=c
-print(r)" 2>/dev/null)
-    if _looks_like_flag "$rotN"; then
-      _decode_hit "ROT${shift}" "$raw" "$rotN"
+  # Satu python3 spawn untuk semua ROT, bukan 24 spawn terpisah
+  local caesar_all
+  caesar_all=$(ROT_INPUT="$raw" python3 - <<'PYEOF'
+import re, os
+s = os.environ.get("ROT_INPUT", "").rstrip('\n')
+FLAG_RE = re.compile(r'^[A-Za-z0-9_!@#$%^&*-]{3,}\{[^}]+\}$|^\{[A-Za-z0-9_!@#$%^&*-]+\}$')
+for shift in range(1, 26):
+    if shift == 13:
+        continue
+    rotted = []
+    for c in s:
+        if c.isalpha():
+            base = ord('A') if c.isupper() else ord('a')
+            rotted.append(chr((ord(c) - base + shift) % 26 + base))
+        else:
+            rotted.append(c)
+    r = ''.join(rotted)
+    if FLAG_RE.search(r):
+        print(f"{shift}|{r}")
+PYEOF
+)
+  if [[ -n "$caesar_all" ]]; then
+    while IFS='|' read -r _shift _rotN; do
+      [[ -z "$_shift" ]] && continue
+      _decode_hit "ROT${_shift}" "$raw" "$_rotN"
       found_any=true
-    fi
-  done
+    done <<< "$caesar_all"
+  fi
 
   # ── 8. URL DECODE (%xx) ──────────────────────────
   if echo "$raw" | grep -qE '%[0-9a-fA-F]{2}'; then
@@ -629,6 +640,17 @@ check_deps() {
     echo -e "    ${DIM}Fungsi: brute-force password steghide dengan wordlist (rockyou)${NC}"
   fi
 
+  # stegseek
+  if [[ -n "$STEGSEEK_CMD" ]]; then
+    ok "stegseek ${DIM}→ $STEGSEEK_CMD${NC}"
+  else
+    warn "stegseek ${DIM}(tidak ditemukan — DIREKOMENDASIKAN, lebih cepat dari stegcrack)${NC}"
+    echo -e "    ${DIM}Fix: sudo apt install stegseek${NC}"
+    echo -e "    ${DIM}     atau: download .deb dari https://github.com/RickdeJager/StegSeek/releases${NC}"
+    echo -e "    ${DIM}Fungsi: crack steghide JPEG/BMP/WAV/AU — jauh lebih cepat dari stegcrack${NC}"
+    echo -e "    ${DIM}Mode --seed: deteksi file steghide TANPA wordlist (bisa recover jika tanpa enkripsi)${NC}"
+  fi
+
   # WSL display warning
   divider
   if grep -qi "microsoft\|wsl" /proc/version 2>/dev/null; then
@@ -914,7 +936,101 @@ mod_steganography() {
     fi
 
     divider
-    info "StegCrack — Brute-force Password Steghide"
+    info "StegSeek — Seed Scan (deteksi steghide tanpa wordlist)"
+    if [[ -n "$STEGSEEK_CMD" ]]; then
+      local ss_seed_out ss_seed_file
+      ss_seed_file="/tmp/fasfo_stegseek_seed_$(basename "$target").out"
+      info "Menjalankan stegseek --seed untuk mendeteksi embedding pattern..."
+      info "${DIM}Mode ini bisa menemukan file tersembunyi meski tanpa enkripsi${NC}"
+      ss_seed_out=$($STEGSEEK_CMD --seed "$target" "$ss_seed_file" 2>&1)
+      echo "$ss_seed_out" | sed 's/^/    /'
+      # Cek apakah berhasil menemukan sesuatu
+      local ss_orig_name
+      ss_orig_name=$(echo "$ss_seed_out" | grep -oP '(?<=Original filename: ")[^"]+' | head -1)
+      if [[ -n "$ss_orig_name" ]]; then
+        found "StegSeek --seed berhasil! File asli: ${W}$ss_orig_name${NC}"
+        log_report "STEGSEEK_SEED_HIT: $ss_orig_name"
+        if [[ -f "$ss_seed_file" ]]; then
+          info "Output disimpan di: ${W}$ss_seed_file${NC}"
+          # Tampilkan konten jika berupa teks
+          local ss_content_type
+          ss_content_type=$(file --brief "$ss_seed_file" 2>/dev/null | tr '[:upper:]' '[:lower:]')
+          if echo "$ss_content_type" | grep -qiE "text|ascii"; then
+            info "Isi file hasil extract:"
+            cat "$ss_seed_file" | head -20 | sed 's/^/    /'
+            # Cek flag di dalamnya
+            local ss_flag
+            ss_flag=$(cat "$ss_seed_file" | grep -oE '[A-Za-z0-9_]{2,}\{[^}]+\}' | head -5)
+            [[ -n "$ss_flag" ]] && found "FLAG dari StegSeek seed: $ss_flag" && log_report "STEGSEEK_FLAG: $ss_flag"
+          fi
+        fi
+      else
+        warn "StegSeek --seed: tidak ada embedding pattern terdeteksi"
+        log_report "STEGSEEK_SEED: tidak ditemukan"
+      fi
+      rm -f "$ss_seed_file"
+    else
+      warn "stegseek tidak ditemukan — install: sudo apt install stegseek"
+      warn "Download .deb: https://github.com/RickdeJager/StegSeek/releases"
+      warn "Manual: stegseek --seed $target output.out"
+    fi
+
+    divider
+    info "StegSeek — Wordlist Crack (lebih cepat dari StegCrack)"
+    if [[ -n "$STEGSEEK_CMD" ]]; then
+      if [[ -n "$WORDLIST" ]]; then
+        local ss_crack_out ss_passphrase ss_orig ss_crack_file
+        ss_crack_file="/tmp/fasfo_stegseek_crack_$(basename "$target").out"
+        info "Menjalankan stegseek --crack dengan wordlist: ${DIM}$WORDLIST${NC}"
+        info "${Y}[!]${NC} StegSeek jauh lebih cepat dari stegcrack — rockyou.txt ~1-2 menit"
+        # Jalankan stegseek crack, tangkap output
+        ss_crack_out=$($STEGSEEK_CMD --crack "$target" "$WORDLIST" "$ss_crack_file" 2>&1)
+        echo "$ss_crack_out" | sed 's/^/    /'
+        # Parse passphrase dari output stegseek
+        ss_passphrase=$(echo "$ss_crack_out" | grep -oP '(?<=Found passphrase: ")[^"]+|(?<=Found passphrase: )\S+' | head -1)
+        ss_orig=$(echo "$ss_crack_out" | grep -oP '(?<=Original filename: ")[^"]+' | head -1)
+        if [[ -n "$ss_passphrase" ]]; then
+          found "StegSeek CRACK BERHASIL!"
+          found "  Passphrase : ${W}$ss_passphrase${NC}"
+          [[ -n "$ss_orig" ]] && found "  File asli  : ${W}$ss_orig${NC}"
+          log_report "STEGSEEK_CRACK_HIT: passphrase=$ss_passphrase orig_file=$ss_orig"
+          if [[ -f "$ss_crack_file" ]]; then
+            info "Output disimpan di: ${W}$ss_crack_file${NC}"
+            local ss_crack_type
+            ss_crack_type=$(file --brief "$ss_crack_file" 2>/dev/null | tr '[:upper:]' '[:lower:]')
+            if echo "$ss_crack_type" | grep -qiE "text|ascii"; then
+              info "Isi file hasil extract:"
+              cat "$ss_crack_file" | head -20 | sed 's/^/    /'
+              local ss_crack_flag
+              ss_crack_flag=$(cat "$ss_crack_file" | grep -oE '[A-Za-z0-9_]{2,}\{[^}]+\}' | head -5)
+              [[ -n "$ss_crack_flag" ]] && found "FLAG dari StegSeek crack: $ss_crack_flag" && log_report "STEGSEEK_CRACK_FLAG: $ss_crack_flag"
+            fi
+            # Salin ke direktori kerja dengan nama asli jika ada
+            if [[ -n "$ss_orig" ]]; then
+              local out_dest
+              out_dest="$(dirname "$target")/$ss_orig"
+              cp "$ss_crack_file" "$out_dest" 2>/dev/null && \
+                info "File disalin ke: ${W}$out_dest${NC}"
+            fi
+          fi
+          rm -f "$ss_crack_file"
+        else
+          warn "StegSeek crack: passphrase tidak ditemukan di wordlist"
+          log_report "STEGSEEK_CRACK: tidak ditemukan"
+          rm -f "$ss_crack_file"
+        fi
+      else
+        warn "StegSeek tersedia tapi wordlist (rockyou.txt) tidak ditemukan"
+        warn "Install wordlist: sudo apt install wordlists && sudo gunzip /usr/share/wordlists/rockyou.txt.gz"
+        warn "Manual: stegseek --crack $target /path/to/wordlist.txt output.out"
+      fi
+    else
+      warn "stegseek tidak ditemukan — install: sudo apt install stegseek"
+      warn "Manual: stegseek --crack $target $WORDLIST output.out"
+    fi
+
+    divider
+    info "StegCrack — Brute-force Password Steghide (fallback)"
     if [[ -n "$STEGCRACK_CMD" ]]; then
       if [[ -n "$WORDLIST" ]]; then
         info "Menjalankan StegCrack dengan wordlist: ${DIM}$WORDLIST${NC}"
@@ -972,8 +1088,61 @@ mod_steganography() {
       ffmpeg -i "$target" 2>&1 | grep -E "(Duration|Audio|Stream)" | sed 's/^/    /'
     fi
 
-    # StegCrack untuk WAV (steghide support WAV)
+    # StegSeek & StegCrack untuk WAV (steghide support WAV)
     if [[ "$ftype" == *"wave"* || "$ftype" == *"wav"* ]]; then
+      divider
+      info "StegSeek — Seed Scan WAV (deteksi tanpa wordlist)"
+      if [[ -n "$STEGSEEK_CMD" ]]; then
+        local ss_wav_seed_out ss_wav_seed_file
+        ss_wav_seed_file="/tmp/fasfo_stegseek_wav_seed_$(basename "$target").out"
+        ss_wav_seed_out=$($STEGSEEK_CMD --seed "$target" "$ss_wav_seed_file" 2>&1)
+        echo "$ss_wav_seed_out" | sed 's/^/    /'
+        local ss_wav_orig
+        ss_wav_orig=$(echo "$ss_wav_seed_out" | grep -oP '(?<=Original filename: ")[^"]+' | head -1)
+        if [[ -n "$ss_wav_orig" ]]; then
+          found "StegSeek seed WAV berhasil! File asli: ${W}$ss_wav_orig${NC}"
+          log_report "STEGSEEK_WAV_SEED_HIT: $ss_wav_orig"
+          [[ -f "$ss_wav_seed_file" ]] && {
+            info "Output: ${W}$ss_wav_seed_file${NC}"
+            file --brief "$ss_wav_seed_file" | grep -qiE "text|ascii" && \
+              cat "$ss_wav_seed_file" | head -10 | sed 's/^/    /'
+          }
+        else
+          warn "StegSeek seed WAV: tidak ada embedding terdeteksi"
+        fi
+        rm -f "$ss_wav_seed_file"
+      else
+        warn "stegseek tidak ditemukan — install: sudo apt install stegseek"
+      fi
+
+      divider
+      info "StegSeek — Wordlist Crack WAV"
+      if [[ -n "$STEGSEEK_CMD" ]] && [[ -n "$WORDLIST" ]]; then
+        local ss_wav_crack_out ss_wav_pass ss_wav_crack_file
+        ss_wav_crack_file="/tmp/fasfo_stegseek_wav_crack_$(basename "$target").out"
+        info "Menjalankan stegseek --crack pada file WAV..."
+        ss_wav_crack_out=$($STEGSEEK_CMD --crack "$target" "$WORDLIST" "$ss_wav_crack_file" 2>&1)
+        echo "$ss_wav_crack_out" | sed 's/^/    /'
+        ss_wav_pass=$(echo "$ss_wav_crack_out" | grep -oP '(?<=Found passphrase: ")[^"]+|(?<=Found passphrase: )\S+' | head -1)
+        if [[ -n "$ss_wav_pass" ]]; then
+          found "StegSeek WAV crack berhasil! Passphrase: ${W}$ss_wav_pass${NC}"
+          log_report "STEGSEEK_WAV_CRACK_HIT: passphrase=$ss_wav_pass"
+          [[ -f "$ss_wav_crack_file" ]] && {
+            info "Output: ${W}$ss_wav_crack_file${NC}"
+            file --brief "$ss_wav_crack_file" | grep -qiE "text|ascii" && \
+              cat "$ss_wav_crack_file" | head -10 | sed 's/^/    /'
+          }
+        else
+          warn "StegSeek WAV crack: passphrase tidak ditemukan"
+          log_report "STEGSEEK_WAV_CRACK: tidak ditemukan"
+        fi
+        rm -f "$ss_wav_crack_file"
+      elif [[ -z "$STEGSEEK_CMD" ]]; then
+        warn "stegseek tidak ditemukan — install: sudo apt install stegseek"
+      else
+        warn "Wordlist tidak ditemukan untuk StegSeek WAV"
+      fi
+
       divider
       info "StegCrack — Brute-force Password Steghide (WAV)"
       if [[ -n "$STEGCRACK_CMD" ]] && [[ -n "$WORDLIST" ]]; then
@@ -4065,49 +4234,82 @@ mod_cryptography() {
   echo -e "  ${DIM}Mencoba semua ROT1–ROT25 dan mencari flag pattern...${NC}"
   echo ""
 
-  # Ambil string candidate (panjang 8-200 karakter, hanya alfabet)
-  local caesar_candidates
-  caesar_candidates=$(echo "$content" | grep -oE '[A-Za-z ]{8,}' | sort -u | head -20)
-
-  if [[ -z "$caesar_candidates" ]]; then
-    # Coba baca file mentah jika strings kosong
-    [[ -f "$target" ]] && caesar_candidates=$(cat "$target" 2>/dev/null | grep -oE '[A-Za-z ]{8,}' | sort -u | head -20)
+  # Ambil string kandidat — max 10 baris, max 300 char/baris
+  # Baca dari file mentah agar tidak kehilangan karakter non-ASCII
+  local caesar_raw=""
+  if [[ -f "$target" ]]; then
+    caesar_raw=$(cat "$target" 2>/dev/null | head -c 50000)
+  else
+    caesar_raw="$content"
   fi
+
+  local caesar_candidates
+  caesar_candidates=$(printf '%s\n' "$caesar_raw" \
+    | grep -oE '[A-Za-z0-9 _!@#{}\[\]]{8,300}' \
+    | awk '{gsub(/^[[:space:]]+|[[:space:]]+$/,""); if(length>7) print}' \
+    | sort -u \
+    | head -10)
 
   local caesar_hit=false
   if [[ -n "$caesar_candidates" ]]; then
-    while IFS= read -r cline; do
-      [[ -z "$cline" ]] && continue
+    # ── SATU python3 spawn — semua baris x ROT1-25 sekaligus ──────
+    # Sebelumnya: 20 baris x 25 ROT x 1 python3 spawn = 500 proses (~100 detik)
+    # Sekarang  : 1 python3 spawn, semua iterasi di dalam Python (~0.1 detik)
+    local py_result
+    py_result=$(CAESAR_INPUT="$caesar_candidates" python3 - <<'PYEOF'
+import re, os
+
+raw = os.environ.get("CAESAR_INPUT", "")
+lines = [l.strip() for l in raw.splitlines() if l.strip()][:10]
+
+FLAG_PAT = re.compile(
+    r'(flag|ctf|key|secret|password|answer)\{[^}]{2,}\}'
+    r'|^[A-Za-z0-9_]{2,10}\{[^}]{3,}\}$',
+    re.IGNORECASE
+
+seen = set()
+for line in lines:
+    for rot in range(1, 26):
+        rotted = []
+        for c in line:
+            if c.isalpha():
+                base = ord('A') if c.isupper() else ord('a')
+                rotted.append(chr((ord(c) - base + rot) % 26 + base))
+            else:
+                rotted.append(c)
+        r = ''.join(rotted)
+        if FLAG_PAT.search(r) and r not in seen:
+            seen.add(r)
+            print(f"ROT{rot}|{r}")
+PYEOF
+)
+
+    if [[ -n "$py_result" ]]; then
+      while IFS='|' read -r rot_label rotted_val; do
+        [[ -z "$rot_label" ]] && continue
+        found "${rot_label}: ${BOLD}${rotted_val}${NC}"
+        log_report "FLAG_CAESAR_${rot_label}: $rotted_val"
+        caesar_hit=true
+      done <<< "$py_result"
+    fi
+
+    # ── Preview cepat semua ROT via tr (bash native, tanpa subprocess) ──
+    local first_line
+    first_line=$(printf '%s\n' "$caesar_candidates" | head -1)
+    if [[ -n "$first_line" ]]; then
+      echo -e "  ${DIM}Preview ROT1-25 untuk: ${W}${first_line:0:60}${NC}"
+      local UP="ABCDEFGHIJKLMNOPQRSTUVWXYZ"
+      local LO="abcdefghijklmnopqrstuvwxyz"
       for rot in {1..25}; do
-        local rotted
-        rotted=$(echo "$cline" | tr 'A-Za-z' \
-          "$(echo {A..Z} | tr -d ' ' | cut -c$((rot+1))- | cat - <(echo {A..Z} | tr -d ' ' | cut -c1-$rot))$(echo {a..z} | tr -d ' ' | cut -c$((rot+1))- | cat - <(echo {a..z} | tr -d ' ' | cut -c1-$rot))" 2>/dev/null)
-        # Cara sederhana: gunakan python3
-        rotted=$(python3 -c "
-s='$cline'
-r=$rot
-res=''
-for c in s:
-    if c.isalpha():
-        base=ord('A') if c.isupper() else ord('a')
-        res+=chr((ord(c)-base+r)%26+base)
-    else:
-        res+=c
-print(res)
-" 2>/dev/null)
-        if echo "$rotted" | grep -qiE '(flag|ctf|key|secret|password|answer)\{?[^}]{3,}\}?'; then
-          found "ROT${rot}: ${BOLD}$rotted${NC}"
-          log_report "FLAG_CAESAR_ROT${rot}: $rotted"
-          caesar_hit=true
-        fi
-        # Cek flag pattern standar
-        if echo "$rotted" | grep -qiE '^[A-Za-z0-9_]{2,10}\{[^}]{3,}\}$'; then
-          found "ROT${rot} flag format: ${BOLD}$rotted${NC}"
-          log_report "FLAG_CAESAR_ROT${rot}: $rotted"
-          caesar_hit=true
-        fi
+        local UR LR tr_out
+        UR="${UP:$rot}${UP:0:$rot}"
+        LR="${LO:$rot}${LO:0:$rot}"
+        tr_out=$(printf '%s' "$first_line" | tr 'A-Za-z' "${UR}${LR}")
+        printf "    ${DIM}ROT%-2d${NC}: %s\n" "$rot" "$tr_out"
       done
-    done
+    fi
+  else
+    warn "Tidak ada string kandidat ditemukan untuk Caesar brute force"
   fi
   [[ "$caesar_hit" == false ]] && ok "Tidak ada Caesar/ROT flag ditemukan secara otomatis"
 
@@ -4180,20 +4382,32 @@ else:
   # Atbash
   if [[ -n "$content" ]]; then
     local atbash_results
-    atbash_results=$(echo "$content" | grep -oE '[A-Za-z]{6,}' | head -10 | while read -r w; do
-      python3 -c "
-w='$w'
-r=''.join(chr(ord('Z')-ord(c)+ord('A')) if c.isupper() else chr(ord('z')-ord(c)+ord('a')) for c in w)
-print(r)
-" 2>/dev/null
-    done)
+    # ── Atbash — satu python3 spawn untuk semua kata ──
+    local atbash_results
+    atbash_results=$(ATBASH_INPUT="$(printf '%s\n' "$content" | grep -oE '[A-Za-z]{6,}' | head -10)" \
+      python3 - <<'PYEOF'
+import re, os
+raw = os.environ.get("ATBASH_INPUT", "")
+words = [w.strip() for w in raw.splitlines() if w.strip()][:10]
+FLAG_PAT = re.compile(r'(flag|ctf|key|secret)', re.IGNORECASE)
+for w in words:
+    r = ''.join(
+        chr(ord('Z') - ord(c) + ord('A')) if c.isupper()
+        else chr(ord('z') - ord(c) + ord('a'))
+        for c in w
+    )
+    if FLAG_PAT.search(r):
+        print(r)
+PYEOF
+)
     local atbash_flag
-    atbash_flag=$(echo "$atbash_results" | grep -iE '(flag|ctf|key|secret)')
+    atbash_flag=$(printf '%s\n' "$atbash_results" | grep -iE '(flag|ctf|key|secret)')
     if [[ -n "$atbash_flag" ]]; then
       found "Atbash decode: ${BOLD}$atbash_flag${NC}"
       log_report "FLAG_ATBASH: $atbash_flag"
     else
       ok "Tidak ada flag Atbash yang terdeteksi"
+
     fi
 
     # ROT13 (sudah ada di decode engine, tapi kita check ulang)
@@ -5904,7 +6118,7 @@ show_help() {
   echo -e "  --Forensics     Wajib — aktifkan mode forensics"
   echo -e "  --decode        Decode string langsung (base64, hex, rot13, reversed, dll)"
   echo -e "  --file          Modul file analysis (magic bytes, strings, binwalk)"
-  echo -e "  --stego         Modul steganography (zsteg, steghide, outguess)"
+  echo -e "  --stego         Modul steganography (zsteg, steghide, outguess, stegseek)"
   echo -e "  --net           Modul network forensics + DNS tunneling"
   echo -e "  --mem           Modul memory forensics (volatility3)"
   echo -e "  --osint         Modul OSINT (whois, DNS, recon)"
@@ -6099,7 +6313,7 @@ menu_forensics() {
   # Susun daftar modul + auto-highlight modul yang relevan
   local modul_opts=(
     "📁  File Analysis       — magic bytes, strings, binwalk, exiftool"
-    "🖼️   Steganography       — zsteg, steghide, outguess, stegsolve"
+    "🖼️   Steganography       — zsteg, steghide, stegseek, outguess, stegsolve"
     "🌐  Network Forensics   — PCAP / tshark + DNS tunneling"
     "🧠  Memory Forensics    — volatility3 / strings"
     "📦  Archive Analysis    — ZIP/RAR/7Z + bruteforce"
@@ -6666,7 +6880,7 @@ _run_multiscan_interactive() {
   # Pilih modul (berlaku ke semua file)
   local modul_opts=(
     "📁  File Analysis     — magic bytes, strings, binwalk, exiftool"
-    "🖼️   Steganography     — zsteg, steghide, outguess, stegsolve"
+    "🖼️   Steganography     — zsteg, steghide, stegseek, outguess, stegsolve"
     "🌐  Network Forensics — PCAP / tshark analysis"
     "🧠  Memory Forensics  — volatility3 / strings"
     "📦  Archive Analysis  — ZIP/RAR/7Z + bruteforce"
