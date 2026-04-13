@@ -10,6 +10,21 @@ FASFO_DIR="$HOME/.fasfo"
 REPORT_DIR="$FASFO_DIR/reports"
 mkdir -p "$REPORT_DIR"
 
+# Folder sesi aktif (diset oleh _prompt_session_folder)
+SESSION_REPORT_DIR=""
+
+# ─────────────────────────────────────────
+#  HELPER — kembalikan dir output aktif
+#  Pakai SESSION_REPORT_DIR jika sudah di-set, fallback ke REPORT_DIR
+# ─────────────────────────────────────────
+_active_report_dir() {
+  if [[ -n "$SESSION_REPORT_DIR" ]]; then
+    echo "$SESSION_REPORT_DIR"
+  else
+    echo "$REPORT_DIR"
+  fi
+}
+
 # ─────────────────────────────────────────
 #  PATH DETECTION — tools non-standar
 # ─────────────────────────────────────────
@@ -502,7 +517,7 @@ run_decode_mode() {
   echo ""
 
   # ── Laporan disimpan ──
-  local dec_report="$REPORT_DIR/decode_$(date +%Y%m%d_%H%M%S).txt"
+  local dec_report="$(_active_report_dir)/decode_$(date +%Y%m%d_%H%M%S).txt"
   {
     echo "FASFO Decode Report — $(date)"
     echo "Input: $input"
@@ -871,7 +886,7 @@ mod_file_analysis() {
   divider
   info "File Carving (foremost)"
   if has foremost; then
-    local carve_dir="$REPORT_DIR/carved_$(basename "$target")"
+    local carve_dir="$(_active_report_dir)/carved_$(basename "$target")"
     mkdir -p "$carve_dir"
     foremost -i "$target" -o "$carve_dir" -q 2>/dev/null
     local carved_count
@@ -1856,7 +1871,7 @@ PYEOF
     # Deep extraction
     echo ""
     info "Binwalk deep extraction (--dd semua signature):"
-    local bw_extract_dir="$REPORT_DIR/binwalk_deep_$(basename "$target")_$$"
+    local bw_extract_dir="$(_active_report_dir)/binwalk_deep_$(basename "$target")_$$"
     mkdir -p "$bw_extract_dir"
     binwalk --dd='.*' -C "$bw_extract_dir" "$target" 2>/dev/null | head -15 | sed 's/^/    /'
     local extracted
@@ -1871,7 +1886,7 @@ PYEOF
   divider
   info "[4] File Carving — foremost & scalpel"
   if has foremost; then
-    local carve_dir="$REPORT_DIR/carve_adv_$(basename "$target")_$$"
+    local carve_dir="$(_active_report_dir)/carve_adv_$(basename "$target")_$$"
     mkdir -p "$carve_dir"
     foremost -t all -i "$target" -o "$carve_dir" 2>/dev/null
     local n
@@ -1884,7 +1899,7 @@ PYEOF
   fi
 
   if has scalpel; then
-    local scalpel_dir="$REPORT_DIR/scalpel_$(basename "$target")_$$"
+    local scalpel_dir="$(_active_report_dir)/scalpel_$(basename "$target")_$$"
     mkdir -p "$scalpel_dir"
     scalpel "$target" -o "$scalpel_dir" 2>/dev/null | tail -10 | sed 's/^/    /'
     local ns
@@ -2140,7 +2155,7 @@ mod_advanced_memory() {
   info "[8] Timeline Reconstruction"
   if has fls && has mactime; then
     echo -e "  ${DIM}Membuat timeline dengan fls + mactime:${NC}"
-    local timeline_file="$REPORT_DIR/timeline_$(basename "$target")_$$.csv"
+    local timeline_file="$(_active_report_dir)/timeline_$(basename "$target")_$$.csv"
     fls -r -m "/" "$target" 2>/dev/null > /tmp/fasfo_bodyfile_$$.txt
     mactime -b /tmp/fasfo_bodyfile_$$.txt 2>/dev/null | tail -30 | sed 's/^/    /'
     mactime -b /tmp/fasfo_bodyfile_$$.txt 2>/dev/null > "$timeline_file"
@@ -2220,7 +2235,7 @@ mod_advanced_network() {
   divider
   info "[1] Rekonstruksi File dari PCAP (HTTP, FTP, SMB)"
 
-  local http_export_dir="$REPORT_DIR/pcap_http_$(basename "$target")_$$"
+  local http_export_dir="$(_active_report_dir)/pcap_http_$(basename "$target")_$$"
   mkdir -p "$http_export_dir"
 
   info "HTTP object extraction:"
@@ -2412,7 +2427,7 @@ except Exception as e:
   divider
   info "[7] Tool Lanjutan — Zeek & NetworkMiner"
   if has zeek; then
-    local zeek_dir="$REPORT_DIR/zeek_$(basename "$target")_$$"
+    local zeek_dir="$(_active_report_dir)/zeek_$(basename "$target")_$$"
     mkdir -p "$zeek_dir"
     zeek -r "$target" -C LogAscii::output_dir="$zeek_dir" 2>/dev/null &
     ok "Zeek berjalan di background → output: $zeek_dir"
@@ -2580,7 +2595,7 @@ PYEOF
       # Frame extraction untuk video
       if echo "$ftype" | grep -qiE "video|mp4|avi|mkv|mov"; then
         info "Video frame extraction (untuk frame-based stego):"
-        local frame_dir="$REPORT_DIR/frames_$(basename "$target")_$$"
+        local frame_dir="$(_active_report_dir)/frames_$(basename "$target")_$$"
         mkdir -p "$frame_dir"
         ffmpeg -i "$target" -vf "fps=1" "$frame_dir/frame_%04d.png" -hide_banner 2>/dev/null
         local nframes
@@ -2733,7 +2748,7 @@ mod_archive() {
   section "Archive Analysis"
   local target="$1"
   local arc_type=""
-  local extract_dir="$REPORT_DIR/extracted_$(basename "$target")_$$"
+  local extract_dir="$(_active_report_dir)/extracted_$(basename "$target")_$$"
 
   # ── Deteksi tipe archive ──────────────────
   divider
@@ -3167,7 +3182,7 @@ mod_archive_bruteforce() {
 # ── Helper: ekstrak setelah password ditemukan ─────────────
 _do_extract() {
   local target="$1" arc_type="$2" pw="$3"
-  local out_dir="$REPORT_DIR/cracked_$(basename "$target")_$$"
+  local out_dir="$(_active_report_dir)/cracked_$(basename "$target")_$$"
   mkdir -p "$out_dir"
 
   divider
@@ -4724,6 +4739,954 @@ print('  └─ ECDSA k reuse   → k bisa dihitung, private key bocor')
 " 2>/dev/null
 
   # ════════════════════════════════════════════════════════════
+  #  BAGIAN 3d — CTF CRYPTO ATTACK SUITE (Write-up Based)
+  #  Semua langsung dieksekusi — tidak ada template/panduan saja
+  #  Covers: Vigenere Solver, XOR KPA, RSA Common Modulus,
+  #          Bellcore CRT Fault, NIGHTFALL chain,
+  #          AbsoluteCinema, XOR Crib Dragging
+  # ════════════════════════════════════════════════════════════
+  divider
+  info "${BOLD}[3d/5] CTF Crypto Attack Suite${NC} — Langsung Dieksekusi"
+  echo ""
+
+  # ──────────────────────────────────────────────────────────
+  # 3d-i. NIGHTFALL: Atbash + Caesar berlapis (Prefix Oracle)
+  # Cara kerja: ciphertext → Atbash → Caesar brute ROT0-25
+  #             prefix oracle: jika hasil awali CTF{/FLAG{/RAO{ → HIT
+  #             juga coba urutan terbalik: Caesar → Atbash
+  # ──────────────────────────────────────────────────────────
+  info "${BOLD}[NIGHTFALL — Atbash ↔ Caesar Chain + Prefix Oracle]${NC}"
+  echo -e "  ${DIM}Brute: Atbash→Caesar dan Caesar→Atbash, oracle: CTF{/FLAG{/RAO{${NC}"
+  echo ""
+
+  if [[ -n "$content" ]]; then
+    NIGHTFALL_INPUT="$(echo "$content" | head -c 5000)" python3 - <<'NIGHTFALL_PY'
+import os, re, sys
+
+text = os.environ.get("NIGHTFALL_INPUT", "")
+known_prefixes = ["CTF{","FLAG{","flag{","ctf{","HTB{","picoCTF{","PCTF{","RAO{","KEY{","RACTF{"]
+
+def atbash(s):
+    r = ""
+    for c in s:
+        if c.isalpha():
+            base = ord('A') if c.isupper() else ord('a')
+            r += chr(base + 25 - (ord(c) - base))
+        else:
+            r += c
+    return r
+
+def caesar(s, shift):
+    r = ""
+    for c in s:
+        if c.isalpha():
+            base = ord('A') if c.isupper() else ord('a')
+            r += chr((ord(c) - base + shift) % 26 + base)
+        else:
+            r += c
+    return r
+
+flag_re = re.compile(r'[A-Za-z0-9_]{2,10}\{[^}]{3,}\}')
+hits = []
+seen_vals = set()
+
+def try_result(method, result, source_line):
+    fl = flag_re.search(result)
+    val = fl.group() if fl else None
+    # Cek prefix oracle
+    prefix_hit = any(result.upper().startswith(pf.upper()) for pf in known_prefixes)
+    if fl and val not in seen_vals:
+        seen_vals.add(val)
+        hits.append((method, val, source_line))
+    elif prefix_hit:
+        snippet = result[:80]
+        if snippet not in seen_vals:
+            seen_vals.add(snippet)
+            hits.append((method, snippet, source_line))
+
+# Scan tiap baris di konten
+lines_checked = 0
+for raw_line in text.splitlines():
+    line = raw_line.strip()
+    if len(line) < 4:
+        continue
+    lines_checked += 1
+    if lines_checked > 200:
+        break
+
+    ab = atbash(line)
+
+    # [A] Atbash saja
+    try_result("Atbash", ab, line)
+
+    # [B] Atbash → Caesar ROT 0-25
+    for shift in range(26):
+        try_result(f"Atbash→Caesar(ROT{shift})", caesar(ab, shift), line)
+
+    # [C] Caesar → Atbash
+    for shift in range(26):
+        try_result(f"Caesar(ROT{shift})→Atbash", atbash(caesar(line, shift)), line)
+
+    # [D] Caesar saja (jika baris sudah terlihat seperti ciphertext)
+    for shift in range(26):
+        r = caesar(line, shift)
+        if flag_re.search(r):
+            try_result(f"Caesar(ROT{shift})", r, line)
+
+    # [E] Atbash → Caesar → Atbash (triple layer)
+    for shift in range(26):
+        triple = atbash(caesar(ab, shift))
+        try_result(f"Atbash→Caesar({shift})→Atbash", triple, line)
+
+if hits:
+    print(f"  \033[0;32m[+]\033[0m {len(hits)} hit ditemukan:")
+    for method, val, src in hits:
+        print(f"  \033[0;35m[FLAG?]\033[0m \033[1m{method}\033[0m")
+        print(f"         Input  : \033[2m{src[:60]}\033[0m")
+        print(f"         Hasil  : \033[0;32m{val}\033[0m")
+else:
+    print("  \033[2m[-]\033[0m Tidak ada hit NIGHTFALL chain pada konten ini")
+    # Tetap tampilkan preview Atbash dari baris pertama yang ada alfabet
+    for line in text.splitlines():
+        if len(line) > 6 and any(c.isalpha() for c in line):
+            print(f"  Preview Atbash baris 1: \033[2m{atbash(line.strip())[:80]}\033[0m")
+            break
+NIGHTFALL_PY
+  else
+    warn "Konten kosong — tidak bisa menjalankan NIGHTFALL chain"
+  fi
+
+  # ──────────────────────────────────────────────────────────
+  # 3d-ii. VIGENERE: Kasiski + Friedman + Freq Analysis per Kolom
+  # Cara kerja:
+  #   1. Kasiski: cari repeated trigram/tetragram → GCD spacing → panjang kunci
+  #   2. Friedman: IC per trial key-length → pilih IC tertinggi (mirip English)
+  #   3. Freq analysis tiap kolom → recover byte kunci (chi-squared vs EN freq)
+  #   4. Dekripsi → cek flag pattern → cek akrostik huruf pertama tiap kata
+  # ──────────────────────────────────────────────────────────
+  divider
+  info "${BOLD}[VIGENERE — Kasiski + Friedman IC + Freq Analysis → Auto Decrypt]${NC}"
+  echo -e "  ${DIM}Recover kunci → dekripsi → cek flag + akrostik${NC}"
+  echo ""
+
+  if [[ -n "$content" ]]; then
+    VIGENERE_INPUT="$(echo "$content" | head -c 8000)" python3 - <<'VIGENERE_PY'
+import os, re
+from collections import Counter
+from functools import reduce
+from math import gcd
+
+raw_input = os.environ.get("VIGENERE_INPUT", "")
+
+# Pisahkan semua baris sebagai kandidat (tiap baris bisa jadi ciphertext berbeda)
+flag_re = re.compile(r'[A-Za-z0-9_]{2,10}\{[^}]{3,}\}', re.IGNORECASE)
+EN_FREQ = "etaoinshrdlcumwfgypbvkjxqz"
+
+def ic_score(text):
+    n = len(text)
+    if n < 2: return 0
+    c = Counter(text)
+    return sum(v*(v-1) for v in c.values()) / (n*(n-1))
+
+def kasiski_lengths(text, max_kl=16):
+    """Cari panjang kunci kandidat dari GCD spacing repeated ngram."""
+    spacings = []
+    for ng in [3, 4]:
+        for i in range(len(text) - ng):
+            tri = text[i:i+ng]
+            for j in range(i+ng, len(text)-ng+1):
+                if text[j:j+ng] == tri:
+                    spacings.append(j - i)
+    if not spacings:
+        return list(range(2, min(max_kl+1, 17)))
+    g = reduce(gcd, spacings)
+    # Kumpulkan semua faktor dari setiap spacing
+    factors = set()
+    for sp in spacings:
+        for d in range(2, min(sp+1, max_kl+1)):
+            if sp % d == 0:
+                factors.add(d)
+    # Urutkan berdasarkan frekuensi kemunculan sebagai faktor
+    freq = Counter()
+    for sp in spacings:
+        for d in factors:
+            if sp % d == 0:
+                freq[d] += 1
+    return [k for k, _ in freq.most_common(8)] if freq else list(range(2, min(max_kl+1, 17)))
+
+def best_key_length(text, candidates):
+    """Pilih panjang kunci dengan rata-rata IC kolom tertinggi (Friedman)."""
+    best_kl, best_ic = 2, 0
+    for kl in candidates:
+        if kl < 1 or kl > len(text)//4:
+            continue
+        cols = ["".join(text[i::kl]) for i in range(kl)]
+        avg_ic = sum(ic_score(c) for c in cols) / kl
+        if avg_ic > best_ic:
+            best_ic = avg_ic
+            best_kl = kl
+    return best_kl, best_ic
+
+def recover_key_byte(col):
+    """Chi-squared frequency analysis: cari shift yang paling mirip distribusi English."""
+    freq = Counter(col)
+    n = len(col)
+    best_s, best_chi = 0, float('inf')
+    en_probs = {c: (26 - EN_FREQ.index(c)) / 351 for c in EN_FREQ}
+    for s in range(26):
+        chi = 0
+        for c in EN_FREQ:
+            observed = freq.get(chr((ord(c) - ord('a') + s) % 26 + ord('a')), 0)
+            expected = en_probs[c] * n
+            if expected > 0:
+                chi += (observed - expected)**2 / expected
+        if chi < best_chi:
+            best_chi = chi
+            best_s = s
+    return best_s
+
+def vigenere_dec(ct, key):
+    key = key.lower(); ki = 0; res = []
+    for c in ct:
+        if c.isalpha():
+            shift = ord(key[ki % len(key)]) - ord('a')
+            base  = ord('A') if c.isupper() else ord('a')
+            res.append(chr((ord(c) - base - shift + 26) % 26 + base))
+            ki += 1
+        else:
+            res.append(c)
+    return "".join(res)
+
+def try_vigenere(text_block, label=""):
+    text_alpha = re.sub(r'[^a-z]', '', text_block.lower())
+    if len(text_alpha) < 30:
+        return False
+
+    klen_candidates = kasiski_lengths(text_alpha)
+    best_kl, best_ic = best_key_length(text_alpha, klen_candidates)
+
+    cols  = ["".join(text_alpha[i::best_kl]) for i in range(best_kl)]
+    key   = "".join(chr(recover_key_byte(c) + ord('a')) for c in cols)
+    dec   = vigenere_dec(text_block, key)
+    found = False
+
+    print(f"  {'─'*50}")
+    if label:
+        print(f"  Sumber : \033[2m{label[:60]}\033[0m")
+    print(f"  Panjang kunci terbaik : \033[1m{best_kl}\033[0m  (avg IC={best_ic:.4f})")
+    print(f"  Kunci yang di-recover : \033[1;33m{key.upper()}\033[0m")
+    print(f"  Hasil dekripsi        : \033[0;32m{dec[:120]}\033[0m")
+
+    # Cek flag langsung di plaintext
+    flags = flag_re.findall(dec)
+    for fl in flags:
+        print(f"  \033[0;35m[FLAG?]\033[0m \033[1mVigenere plaintext flag: {fl}\033[0m")
+        found = True
+
+    # Cek akrostik: huruf pertama setiap kata
+    words    = dec.split()
+    acrostic = "".join(w[0] for w in words if w and w[0].isalpha())
+    if len(acrostic) >= 4:
+        print(f"  Akrostik  : \033[2m{acrostic[:80]}\033[0m")
+        fl = flag_re.search(acrostic)
+        if fl:
+            print(f"  \033[0;35m[FLAG?]\033[0m \033[1mAkrostik flag: {fl.group()}\033[0m")
+            found = True
+
+    # Cek akrostik huruf pertama tiap baris hasil dekripsi
+    dec_lines   = [l.strip() for l in dec.splitlines() if l.strip()]
+    line_acrostic = "".join(l[0] for l in dec_lines if l and l[0].isalpha())
+    if len(line_acrostic) >= 4 and line_acrostic != acrostic:
+        print(f"  Akrostik baris: \033[2m{line_acrostic[:80]}\033[0m")
+        fl = flag_re.search(line_acrostic)
+        if fl:
+            print(f"  \033[0;35m[FLAG?]\033[0m \033[1mAkrostik-baris flag: {fl.group()}\033[0m")
+            found = True
+
+    # Coba juga semua panjang kunci 2-16 (exhaustive, prioritas flag)
+    for kl_try in range(2, 17):
+        if kl_try == best_kl:
+            continue
+        if kl_try > len(text_alpha) // 4:
+            break
+        cols_t = ["".join(text_alpha[i::kl_try]) for i in range(kl_try)]
+        key_t  = "".join(chr(recover_key_byte(c) + ord('a')) for c in cols_t)
+        dec_t  = vigenere_dec(text_block, key_t)
+        fls    = flag_re.findall(dec_t)
+        for fl in fls:
+            print(f"  \033[0;35m[FLAG?]\033[0m \033[1m[kl={kl_try}, key={key_t.upper()}] flag: {fl}\033[0m")
+            found = True
+        # Cek akrostik untuk kl_try ini
+        words_t    = dec_t.split()
+        acrostic_t = "".join(w[0] for w in words_t if w and w[0].isalpha())
+        if flag_re.search(acrostic_t):
+            print(f"  \033[0;35m[FLAG?]\033[0m \033[1m[kl={kl_try}, key={key_t.upper()}] akrostik: {flag_re.search(acrostic_t).group()}\033[0m")
+            found = True
+
+    return found
+
+# ── Jalankan pada seluruh konten sekaligus ──
+all_text = raw_input
+any_found = False
+
+# Blok 1: konten penuh
+any_found |= try_vigenere(all_text, "Konten penuh")
+
+# Blok 2: tiap baris panjang (>40 char) secara individual
+for line in all_text.splitlines():
+    line = line.strip()
+    if len(re.sub(r'[^a-zA-Z]','',line)) >= 40:
+        any_found |= try_vigenere(line, f"Baris: {line[:40]}")
+
+if not any_found:
+    print("  \033[2m[-]\033[0m Tidak ada Vigenere flag ditemukan — coba bekali kunci secara manual")
+VIGENERE_PY
+  else
+    warn "Konten kosong — skip Vigenere solver"
+  fi
+
+  # ──────────────────────────────────────────────────────────
+  # 3d-iii. XOR REPEATING KEY — Known-Plaintext Attack (KPA)
+  # Cara kerja:
+  #   C ⊕ P_known = K_fragment
+  #   Extend K_fragment ke berbagai panjang kunci → decrypt → cek flag
+  #   Cross-file: jika ada 2 file di folder yang sama, C1⊕C2=P1⊕P2 (crib drag)
+  # ──────────────────────────────────────────────────────────
+  divider
+  info "${BOLD}[XOR Repeating Key — Known-Plaintext Attack + Cross-File Crib Drag]${NC}"
+  echo -e "  ${DIM}C⊕P_known=K → brute klen → decrypt → flag | C1⊕C2=P1⊕P2 crib drag${NC}"
+  echo ""
+
+  if [[ -f "$target" ]]; then
+    XOR_TARGET="$target" XOR_DIR="$(dirname "$target")" python3 - <<'XOR_KPA_PY'
+import os, re, glob
+
+target  = os.environ.get("XOR_TARGET","")
+tgt_dir = os.environ.get("XOR_DIR",".")
+flag_re = re.compile(rb'[A-Za-z0-9_]{2,10}\{[^}]{3,}\}')
+flag_re_str = re.compile(r'[A-Za-z0-9_]{2,10}\{[^}]{3,}\}')
+
+try:
+    with open(target,"rb") as f:
+        data = f.read()
+except Exception as e:
+    print(f"  Gagal membaca file: {e}"); exit()
+
+if len(data) < 4:
+    print("  File terlalu kecil"); exit()
+
+# ── PART A: KPA dengan known-plaintext umum CTF ──
+known_pts = [
+    (b"CTF{",        "CTF flag prefix"),
+    (b"FLAG{",       "FLAG prefix"),
+    (b"flag{",       "flag lowercase"),
+    (b"picoCTF{",    "picoCTF prefix"),
+    (b"HTB{",        "HackTheBox prefix"),
+    (b"PCTF{",       "PCTF prefix"),
+    (b"RAO{",        "RAO prefix"),
+    (b"\x89PNG\r\n\x1a\n", "PNG magic bytes"),
+    (b"PK\x03\x04",  "ZIP magic"),
+    (b"%PDF",        "PDF magic"),
+    (b"-----BEGIN",  "PEM header"),
+    (b"MZ",          "Windows PE"),
+    (b"\x7fELF",     "ELF binary"),
+    (b"JFIF",        "JPEG"),
+    (b"GIF8",        "GIF"),
+    (b'{"',          "JSON open"),
+    (b"<?xml",       "XML open"),
+    (b"The ",        "English common"),
+    (b"the ",        "English common lc"),
+]
+
+found_any = False
+best_results = []  # (method, key_hex, klen, plaintext_preview)
+
+for pt_bytes, pt_label in known_pts:
+    plen = len(pt_bytes)
+    if plen > len(data):
+        continue
+    # Recover key fragment dari posisi 0
+    key_frag = bytes(data[i] ^ pt_bytes[i] for i in range(plen))
+
+    # Coba panjang kunci berbeda: dari plen sampai 64, kelipatan umum
+    for klen in sorted(set([plen, plen*2, 4,6,8,10,12,16,20,24,32,40,48,64])):
+        if klen > len(data) or klen < 1:
+            continue
+        # Build repeating key dari fragment
+        key = bytes(key_frag[i % len(key_frag)] for i in range(klen))
+        dec = bytes(data[i] ^ key[i % klen] for i in range(len(data)))
+
+        # Cek flag pattern
+        flags = flag_re.findall(dec[:4096])
+        for fl in flags:
+            try:
+                fl_str = fl.decode()
+                if fl_str not in [r[3] for r in best_results]:
+                    best_results.append((f"KPA({pt_label})", key.hex(), klen, fl_str))
+                    found_any = True
+            except:
+                pass
+
+        # Cek printable + keyword
+        try:
+            txt = dec[:200].decode("ascii","ignore")
+            if (len(txt) > 20 and
+                sum(c.isprintable() for c in txt)/len(txt) > 0.85 and
+                re.search(r'(flag|key|secret|ctf|password|admin|hidden)', txt, re.I)):
+                snippet = txt[:80].replace('\n',' ')
+                if snippet not in [r[3] for r in best_results]:
+                    best_results.append((f"KPA({pt_label})-keyword", key.hex(), klen, snippet))
+                    found_any = True
+        except:
+            pass
+
+# ── PART B: Single-byte XOR brute force (klen=1) — termasuk cek semua offset ──
+for key_byte in range(1, 256):
+    dec = bytes(b ^ key_byte for b in data)
+    flags = flag_re.findall(dec[:4096])
+    for fl in flags:
+        try:
+            fl_str = fl.decode()
+            entry = (f"XOR(0x{key_byte:02x})", f"{key_byte:02x}", 1, fl_str)
+            if fl_str not in [r[3] for r in best_results]:
+                best_results.append(entry)
+                found_any = True
+        except:
+            pass
+
+# ── PART C: XOR Cross-file Crib Dragging ──
+# Jika ada ≥2 file di folder yang sama, C1⊕C2=P1⊕P2
+peer_files = [f for f in glob.glob(os.path.join(tgt_dir,"*"))
+              if os.path.isfile(f) and f != target and os.path.getsize(f) > 0]
+
+if peer_files:
+    print(f"  Cross-file Crib Drag: {len(peer_files)} file peer ditemukan")
+    cribs = [b"CTF{", b"FLAG{", b"flag{", b"the ", b"The ", b"key=", b"pass"]
+    for peer_path in peer_files[:5]:
+        try:
+            with open(peer_path,"rb") as pf:
+                peer_data = pf.read()
+            if len(peer_data) < 8:
+                continue
+            xored = bytes(data[i] ^ peer_data[i] for i in range(min(len(data),len(peer_data))))
+            for crib in cribs:
+                clen = len(crib)
+                for pos in range(len(xored) - clen + 1):
+                    candidate = bytes(xored[pos+i] ^ crib[i] for i in range(clen))
+                    try:
+                        txt = candidate.decode("ascii")
+                        if txt.isprintable():
+                            ctx = bytes(xored[max(0,pos-4):pos+clen+20])
+                            full = bytes(xored[pos+i]^crib[i%clen] for i in range(min(40,len(xored)-pos)))
+                            full_str = full.decode("ascii","ignore")
+                            if flag_re_str.search(full_str):
+                                print(f"  \033[0;35m[FLAG?]\033[0m \033[1mCrib drag '{crib.decode(errors='replace')}' pos={pos} vs {os.path.basename(peer_path)}: {full_str}\033[0m")
+                                found_any = True
+                    except:
+                        pass
+        except:
+            pass
+
+# ── Output semua hasil ──
+if best_results:
+    print(f"  \033[0;32m[+]\033[0m {len(best_results)} hasil XOR ditemukan:")
+    for method, key_hex, klen, val in best_results:
+        print(f"  \033[0;35m[FLAG?]\033[0m \033[1m{method}\033[0m  klen={klen}  key={key_hex[:32]}")
+        print(f"         Hasil: \033[0;32m{val}\033[0m")
+elif not found_any:
+    # Tetap tampilkan preview single-byte XOR paling printable
+    best_byte, best_ratio = 0, 0
+    for kb in range(1,256):
+        dec = bytes(b^kb for b in data[:200])
+        try:
+            txt = dec.decode("ascii","ignore")
+            ratio = sum(c.isprintable() for c in txt)/max(len(txt),1)
+            if ratio > best_ratio:
+                best_ratio = ratio
+                best_byte  = kb
+        except:
+            pass
+    dec_best = bytes(b^best_byte for b in data[:80])
+    print(f"  \033[2m[-]\033[0m Tidak ada XOR flag ditemukan secara otomatis")
+    print(f"  Best single-byte: key=0x{best_byte:02x} ratio={best_ratio:.2f} preview: {dec_best.decode('ascii','ignore')[:60]}")
+XOR_KPA_PY
+  else
+    # Target adalah string teks — coba XOR pada hex strings dalam konten
+    info "Target bukan file binary — coba XOR pada hex string dalam konten"
+    HEX_CONTENT="$(echo "$content" | grep -oE '[0-9a-fA-F]{16,}' | head -5 | tr '\n' '|')" python3 - <<'XOR_STR_PY'
+import os, re
+flag_re = re.compile(r'[A-Za-z0-9_]{2,10}\{[^}]{3,}\}')
+hexes = [h for h in os.environ.get("HEX_CONTENT","").split("|") if h]
+for hexstr in hexes[:5]:
+    try:
+        data = bytes.fromhex(hexstr)
+    except:
+        continue
+    for kb in range(1,256):
+        dec = bytes(b^kb for b in data)
+        txt = dec.decode("ascii","ignore")
+        if flag_re.search(txt):
+            print(f"  \033[0;35m[FLAG?]\033[0m \033[1mXOR(0x{kb:02x}) pada hex '{hexstr[:20]}...': {flag_re.search(txt).group()}\033[0m")
+XOR_STR_PY
+  fi
+
+  # ──────────────────────────────────────────────────────────
+  # 3d-iv. RSA COMMON MODULUS ATTACK
+  # Cara kerja:
+  #   N sama, e1 ≠ e2, gcd(e1,e2)=1
+  #   Extended Euclidean: e1·s + e2·t = 1
+  #   M = C1^s · C2^t mod N  (jika s/t negatif → modular inverse)
+  # Scan file untuk N,e1,e2,c1,c2 — jika ketemu langsung solve
+  # ──────────────────────────────────────────────────────────
+  divider
+  info "${BOLD}[RSA Common Modulus Attack — EEA + Bézout → Recover M]${NC}"
+  echo -e "  ${DIM}Scan: N,e1,e2,c1,c2 → gcd(e1,e2)=1? → M=C1^s·C2^t mod N${NC}"
+  echo ""
+
+  RSA_CONTENT="$(echo "$content" | head -c 8000)" python3 - <<'RSA_CM_PY'
+import os, re
+from math import gcd
+
+content = os.environ.get("RSA_CONTENT","")
+
+def extended_gcd(a,b):
+    if b == 0: return a, 1, 0
+    g, x, y = extended_gcd(b, a % b)
+    return g, y, x - (a//b)*y
+
+def common_modulus_attack(N, e1, e2, c1, c2):
+    g, s, t = extended_gcd(e1, e2)
+    if g != 1:
+        return None, f"gcd(e1,e2)={g} — tidak coprime, serangan tidak applicable"
+    if s < 0:
+        c1 = pow(c1, -1, N)
+        s  = -s
+    if t < 0:
+        c2 = pow(c2, -1, N)
+        t  = -t
+    m = (pow(c1, s, N) * pow(c2, t, N)) % N
+    try:
+        raw = m.to_bytes((m.bit_length()+7)//8, 'big')
+        return raw, None
+    except Exception as e:
+        return None, str(e)
+
+# ── Ekstraksi parameter dari konten ──
+def extract_int(pattern, text, idx=0):
+    matches = re.findall(pattern, text, re.IGNORECASE)
+    if idx < len(matches):
+        try: return int(matches[idx].replace(" ","").replace("\n",""))
+        except: return None
+    return None
+
+def extract_large(pattern, text, min_digits=10):
+    matches = re.findall(pattern, text, re.IGNORECASE)
+    for m in matches:
+        m_clean = re.sub(r'[^0-9]','',m)
+        if len(m_clean) >= min_digits:
+            try: return int(m_clean)
+            except: pass
+    return None
+
+# Coba berbagai pola
+N  = extract_large(r'[Nn]\s*[=:]\s*([0-9]+)', content, 15)
+e1 = extract_int(r'[Ee]1\s*[=:]\s*([0-9]+)', content)
+e2 = extract_int(r'[Ee]2\s*[=:]\s*([0-9]+)', content)
+c1 = extract_large(r'[Cc]1\s*[=:]\s*([0-9]+)', content, 10)
+c2 = extract_large(r'[Cc]2\s*[=:]\s*([0-9]+)', content, 10)
+
+# Fallback: cari e tunggal + dua ciphertext berbeda
+if e1 is None:
+    e1 = extract_int(r'\be\s*[=:]\s*(3|17|65537|[0-9]{1,10})', content)
+if c1 is None or c2 is None:
+    big_nums = re.findall(r'\b([0-9]{20,})\b', content)
+    big_nums = list(dict.fromkeys(big_nums))  # unik, jaga urutan
+    if len(big_nums) >= 3 and N is None:
+        N  = int(big_nums[0])
+        c1 = int(big_nums[1])
+        c2 = int(big_nums[2])
+    elif len(big_nums) >= 2 and N is not None:
+        c1 = int(big_nums[0])
+        c2 = int(big_nums[1])
+
+print("  Parameter RSA yang terdeteksi:")
+print(f"    N  = {str(N)[:50] if N else 'Tidak ditemukan'}{'...' if N and len(str(N))>50 else ''}")
+print(f"    e1 = {e1 if e1 else 'Tidak ditemukan'}")
+print(f"    e2 = {e2 if e2 else 'Tidak ditemukan'}")
+print(f"    c1 = {str(c1)[:40] if c1 else 'Tidak ditemukan'}{'...' if c1 and len(str(c1))>40 else ''}")
+print(f"    c2 = {str(c2)[:40] if c2 else 'Tidak ditemukan'}{'...' if c2 and len(str(c2))>40 else ''}")
+print()
+
+if all(x is not None for x in [N, e1, e2, c1, c2]):
+    print(f"  Semua parameter lengkap — menjalankan Common Modulus attack...")
+    g = gcd(e1, e2)
+    print(f"  gcd(e1={e1}, e2={e2}) = {g}")
+    result, err = common_modulus_attack(N, e1, e2, c1, c2)
+    if result:
+        print(f"  \033[0;35m[FLAG?]\033[0m \033[1mHasil dekripsi Common Modulus:\033[0m")
+        print(f"         Bytes : {result.hex()}")
+        try:
+            print(f"         Text  : \033[0;32m{result.decode()}\033[0m")
+        except:
+            print(f"         Text  : \033[0;32m{result.decode('utf-8','replace')}\033[0m")
+    else:
+        print(f"  \033[0;33m[!]\033[0m Attack gagal: {err}")
+        # Coba hitung gcd(N1, N2) jika ada dua modulus
+        ns = re.findall(r'\b([0-9]{30,})\b', content)
+        if len(ns) >= 2:
+            n1, n2 = int(ns[0]), int(ns[1])
+            if n1 != n2:
+                g = gcd(n1, n2)
+                if g > 1:
+                    print(f"  \033[0;35m[FLAG?]\033[0m \033[1mCommon factor N1,N2: gcd={g}\033[0m → p terekspos!")
+else:
+    print("  \033[2m[-]\033[0m Parameter tidak lengkap untuk Common Modulus attack")
+    # Coba common factor attack antar moduli yang ada
+    big_ns = list(dict.fromkeys(re.findall(r'\b([0-9]{30,})\b', content)))
+    if len(big_ns) >= 2:
+        from itertools import combinations
+        for na, nb in list(combinations(big_ns[:6], 2)):
+            try:
+                g = gcd(int(na), int(nb))
+                if g > 1 and g != int(na) and g != int(nb):
+                    print(f"  \033[0;35m[FLAG?]\033[0m \033[1mCommon factor antar moduli: gcd={g}\033[0m")
+                    print(f"         N1={na[:30]}...")
+                    print(f"         N2={nb[:30]}...")
+            except: pass
+RSA_CM_PY
+
+  # ──────────────────────────────────────────────────────────
+  # 3d-v. RSA BELLCORE CRT FAULT ATTACK
+  # Cara kerja:
+  #   Signing dengan CRT: S_correct = m^d mod N (benar)
+  #   S_faulty: salah satu CRT branch error → S_faulty^e mod N ≠ M
+  #   gcd(S_faulty^e - M, N) = p  → faktorisasi N → recover d
+  # Scan file untuk N, e, M, S_correct, S_faulty
+  # ──────────────────────────────────────────────────────────
+  divider
+  info "${BOLD}[RSA Bellcore CRT Fault Attack — gcd(S_faulty^e − M, N) = p]${NC}"
+  echo -e "  ${DIM}Scan: N,e,M,S_correct,S_faulty → factor N → recover d → decrypt${NC}"
+  echo ""
+
+  RSA_BELL_CONTENT="$(echo "$content" | head -c 8000)" python3 - <<'BELLCORE_PY'
+import os, re
+from math import gcd
+
+content = os.environ.get("RSA_BELL_CONTENT","")
+
+def bellcore_fault(N, e, M, S_faulty):
+    """
+    Dari satu signature cacat: gcd(S_faulty^e mod N − M, N) = p
+    Mengembalikan (p, q, d) atau (None,None,None)
+    """
+    diff = (pow(S_faulty, e, N) - M) % N
+    if diff == 0:
+        return None, None, None
+    p = gcd(diff, N)
+    if 1 < p < N:
+        q   = N // p
+        phi = (p-1)*(q-1)
+        try:
+            d = pow(e, -1, phi)
+            return p, q, d
+        except:
+            return p, q, None
+    return None, None, None
+
+# Ekstrak parameter
+big_nums = list(dict.fromkeys(re.findall(r'\b([0-9]{15,})\b', content)))
+
+# Cari N (modulus — biasanya terbesar), e, M, signatures
+def find_param(label_re, text, min_d=5):
+    m = re.search(label_re, text, re.IGNORECASE)
+    if m:
+        digits = re.sub(r'[^0-9]','',m.group(1) if m.lastindex else m.group())
+        if len(digits) >= min_d:
+            try: return int(digits)
+            except: pass
+    return None
+
+N  = find_param(r'[Nn]\s*[=:]\s*([0-9]+)', content, 15)
+e  = find_param(r'\be\s*[=:]\s*(3|17|65537|[0-9]{1,10})', content, 1)
+M  = find_param(r'[Mm](?:essage|sg)?\s*[=:]\s*([0-9]+)', content, 5)
+Sc = find_param(r'[Ss](?:correct|_correct|ig(?:nature)?_correct)\s*[=:]\s*([0-9]+)', content, 5)
+Sf = find_param(r'[Ss](?:faulty|_faulty|ig(?:nature)?_faulty)\s*[=:]\s*([0-9]+)', content, 5)
+
+print("  Parameter Bellcore yang terdeteksi:")
+print(f"    N        = {str(N)[:50] if N else 'Tidak ditemukan'}")
+print(f"    e        = {e if e else 'Tidak ditemukan'}")
+print(f"    M        = {str(M)[:40] if M else 'Tidak ditemukan'}")
+print(f"    S_correct= {str(Sc)[:40] if Sc else 'Tidak ditemukan'}")
+print(f"    S_faulty = {str(Sf)[:40] if Sf else 'Tidak ditemukan'}")
+print()
+
+if N and e and M and Sf:
+    print("  Menjalankan Bellcore CRT Fault attack...")
+    p, q, d = bellcore_fault(N, e, M, Sf)
+    if p:
+        print(f"  \033[0;35m[FLAG?]\033[0m \033[1mFaktorisasi berhasil!\033[0m")
+        print(f"         p = {p}")
+        print(f"         q = {q}")
+        if d:
+            print(f"         d = {str(d)[:60]}...")
+            # Coba decrypt M menggunakan d
+            try:
+                pt = pow(M, d, N)
+                raw = pt.to_bytes((pt.bit_length()+7)//8,'big')
+                print(f"  \033[0;35m[FLAG?]\033[0m \033[1mDekripsi M dengan d:\033[0m \033[0;32m{raw.decode('utf-8','replace')}\033[0m")
+            except Exception as ex:
+                print(f"  Dekripsi error: {ex}")
+            # Coba cari ciphertext lain dalam konten
+            for cn in big_nums:
+                try:
+                    c_int = int(cn)
+                    if c_int == M or c_int == N: continue
+                    pt2 = pow(c_int, d, N)
+                    raw2 = pt2.to_bytes((pt2.bit_length()+7)//8,'big')
+                    txt2 = raw2.decode('ascii','ignore')
+                    if re.search(r'[A-Za-z0-9_]{2,10}\{[^}]{3,}\}', txt2):
+                        print(f"  \033[0;35m[FLAG?]\033[0m \033[1mDekripsi ciphertext lain: {txt2}\033[0m")
+                except: pass
+    else:
+        print("  \033[2m[-]\033[0m gcd tidak menghasilkan faktor — pastikan S_faulty benar-benar cacat")
+        if Sc and Sf:
+            diff_sig = abs(Sc - Sf)
+            g2 = gcd(diff_sig, N) if N else 0
+            if g2 > 1:
+                print(f"  \033[0;33m[!]\033[0m gcd(|S_c - S_f|, N) = {g2} → coba sebagai faktor p")
+else:
+    print("  \033[2m[-]\033[0m Parameter tidak cukup untuk Bellcore attack")
+    print("  Dibutuhkan: N, e, M (plaintext int), S_faulty (signature cacat)")
+    # Tetap coba: jika ada banyak big_nums, brute: coba gcd tiap pasang dengan N terbesar
+    if len(big_nums) >= 3:
+        candidate_N = max(big_nums, key=lambda x: len(x))
+        try:
+            N_cand = int(candidate_N)
+            for sn in big_nums:
+                if sn == candidate_N: continue
+                s_int = int(sn)
+                # Asumsi e=65537
+                for e_try in [3, 17, 65537]:
+                    try:
+                        diff = pow(s_int, e_try, N_cand)
+                        g = gcd(diff, N_cand)
+                        if 1 < g < N_cand:
+                            print(f"  \033[0;33m[!]\033[0m Heuristik: gcd(S^{e_try}, N) = {g} → kemungkinan faktor!")
+                    except: pass
+        except: pass
+BELLCORE_PY
+
+  # ──────────────────────────────────────────────────────────
+  # 3d-vi. ABSOLUTECINEMA: Perfect Square + Digit Constraint
+  # Cara kerja:
+  #   Scan konten → ambil range angka, constraint digit dari soal
+  #   isqrt(n)**2 == n → perfect square
+  #   Filter: digit unik, tanpa 0, digit sum tertentu, dll.
+  #   Langsung cetak semua kandidat + sqrt-nya
+  # ──────────────────────────────────────────────────────────
+  divider
+  info "${BOLD}[AbsoluteCinema — Perfect Square + Digit Constraint Bruteforce]${NC}"
+  echo -e "  ${DIM}Scan range dari konten → filter isqrt + digit constraint → output kandidat${NC}"
+  echo ""
+
+  ABS_CONTENT="$(echo "$content" | head -c 4000)" python3 - <<'ABSCINEMA_PY'
+import os, re, math
+
+content = os.environ.get("ABS_CONTENT","")
+
+def is_perfect_square(n):
+    r = math.isqrt(n)
+    return r * r == n
+
+# Cari angka-angka eksplisit dalam soal untuk menentukan range dan constraint
+numbers_in_text = re.findall(r'\b([0-9]{4,18})\b', content)
+numbers_int     = [int(n) for n in numbers_in_text if 1000 <= int(n) <= 10**18]
+
+# Cari keyword constraint dari konten
+has_unique   = bool(re.search(r'unique|unik|berbeda|distinct', content, re.I))
+has_no_zero  = bool(re.search(r'tanpa 0|no zero|nonzero|bukan 0|not.*zero', content, re.I))
+has_digit_sum= re.search(r'digit.{0,20}sum|jumlah.{0,20}digit|sum.{0,20}digit\s*[=:]\s*([0-9]+)', content, re.I)
+digit_sum_target = int(has_digit_sum.group(1)) if has_digit_sum and has_digit_sum.lastindex else None
+has_even     = bool(re.search(r'\bgenap\b|even digit', content, re.I))
+has_odd      = bool(re.search(r'\bganjil\b|odd digit', content, re.I))
+has_palindrome = bool(re.search(r'palindrom|palindrome', content, re.I))
+
+# Tentukan range dari angka terbesar/terkecil dalam soal
+if numbers_int:
+    range_start = min(numbers_int)
+    range_end   = max(numbers_int)
+    # Jika range terlalu kecil, expand
+    if range_end - range_start < 1000:
+        range_end = range_start * 10
+else:
+    range_start = 1_000_000
+    range_end   = 9_999_999
+
+# Batasi agar tidak infinite
+range_end = min(range_end, range_start + 10_000_000)
+
+print(f"  Range yang dicoba    : {range_start:,} → {range_end:,}")
+print(f"  Total angka          : {range_end - range_start + 1:,}")
+print(f"  Constraint terdeteksi:")
+print(f"    Digit unik         : {'YA' if has_unique else 'Tidak terdeteksi'}")
+print(f"    Tanpa digit 0      : {'YA' if has_no_zero else 'Tidak terdeteksi'}")
+print(f"    Digit sum target   : {digit_sum_target if digit_sum_target else 'Tidak terdeteksi'}")
+print(f"    Digit genap saja   : {'YA' if has_even else 'Tidak'}")
+print(f"    Digit ganjil saja  : {'YA' if has_odd else 'Tidak'}")
+print(f"    Palindrome         : {'YA' if has_palindrome else 'Tidak'}")
+print()
+
+results = []
+# Iterasi hanya perfect squares dalam range (jauh lebih efisien dari brute)
+sqrt_start = math.isqrt(range_start)
+if sqrt_start * sqrt_start < range_start:
+    sqrt_start += 1
+sqrt_end = math.isqrt(range_end)
+
+for sq in range(sqrt_start, sqrt_end+1):
+    n = sq * sq
+    if n < range_start or n > range_end:
+        continue
+    digits = [int(d) for d in str(n)]
+
+    # Apply constraints
+    if has_no_zero and 0 in digits:
+        continue
+    if has_unique and len(set(digits)) != len(digits):
+        continue
+    if digit_sum_target and sum(digits) != digit_sum_target:
+        continue
+    if has_even and any(d % 2 != 0 for d in digits):
+        continue
+    if has_odd and any(d % 2 == 0 for d in digits):
+        continue
+    if has_palindrome and str(n) != str(n)[::-1]:
+        continue
+
+    results.append((n, sq))
+
+if results:
+    print(f"  \033[0;32m[+]\033[0m {len(results)} kandidat perfect square ditemukan:")
+    for n, sq in results[:30]:
+        print(f"  \033[0;35m[FLAG?]\033[0m n={n:,}  →  sqrt={sq}  →  digits={list(str(n))}")
+    if len(results) > 30:
+        print(f"  ... dan {len(results)-30} lainnya (tampilkan semua di log)")
+    # Log semua ke report
+    for n, sq in results:
+        pass  # log_report dipanggil di bash
+else:
+    print("  \033[2m[-]\033[0m Tidak ada perfect square yang memenuhi constraint dalam range ini")
+    # Tetap tampilkan beberapa perfect square di range tanpa constraint
+    plain_sq = [(sq*sq, sq) for sq in range(sqrt_start, min(sqrt_start+20, sqrt_end+1))]
+    print(f"  Preview perfect square di range (tanpa constraint):")
+    for n, sq in plain_sq[:8]:
+        print(f"    {n:,} → sqrt={sq}")
+ABSCINEMA_PY
+
+  # ──────────────────────────────────────────────────────────
+  # 3d-vii. XOR CRIB DRAGGING — Cross-ciphertext recovery
+  # Cara kerja:
+  #   Jika dua ciphertext dienkripsi dengan kunci/keystream sama:
+  #   C1 ⊕ C2 = P1 ⊕ P2
+  #   Geser crib ("the ", "CTF{", " and", dsb.) di sepanjang C1⊕C2
+  #   Jika C1⊕C2[pos:] ⊕ crib = printable → P lainnya di posisi itu
+  # ──────────────────────────────────────────────────────────
+  divider
+  info "${BOLD}[XOR Crib Dragging — C1⊕C2=P1⊕P2 → Slide crib → Recover plaintext]${NC}"
+  echo -e "  ${DIM}Cari hex string berpasangan dalam konten, geser crib CTF/English${NC}"
+  echo ""
+
+  CRIB_CONTENT="$(echo "$content" | head -c 8000)" python3 - <<'CRIBDRAG_PY'
+import os, re
+
+content = os.environ.get("CRIB_CONTENT","")
+flag_re = re.compile(r'[A-Za-z0-9_]{2,10}\{[^}]{3,}\}')
+
+# Ambil semua hex strings panjang dari konten
+hex_strings = re.findall(r'\b([0-9a-fA-F]{32,})\b', content)
+hex_strings = list(dict.fromkeys(hex_strings))[:10]  # unik, max 10
+
+if len(hex_strings) < 2:
+    print("  \033[2m[-]\033[0m Kurang dari 2 hex string panjang ditemukan — crib drag tidak applicable")
+    print("  \033[2m    Tips: upload dua file ciphertext ke folder yang sama untuk cross-file XOR\033[0m")
+else:
+    print(f"  {len(hex_strings)} hex string ditemukan — mencoba semua pasangan...")
+
+    cribs = [
+        "CTF{", "FLAG{", "flag{", "ctf{", "HTB{",
+        "the ", "The ", " and", "and ", "that",
+        " is ", " of ", "key=", "pass", "flag",
+        "http", "<!DO", "<?xm", '{"ke', '{"fl',
+        "\x00\x00\x00", "    ",
+    ]
+
+    found_any = False
+    from itertools import combinations
+
+    for (i1, hex1), (i2, hex2) in combinations(enumerate(hex_strings), 2):
+        try:
+            c1 = bytes.fromhex(hex1)
+            c2 = bytes.fromhex(hex2)
+        except:
+            continue
+        min_len = min(len(c1), len(c2))
+        if min_len < 8:
+            continue
+
+        xored = bytes(c1[i] ^ c2[i] for i in range(min_len))
+
+        for crib in cribs:
+            crib_b = crib.encode("ascii","ignore")
+            clen   = len(crib_b)
+            if clen > min_len:
+                continue
+
+            for pos in range(min_len - clen + 1):
+                # Dari C1 sisi: P2[pos:] jika crib = P1[pos:]
+                candidate = bytes(xored[pos+k] ^ crib_b[k] for k in range(clen))
+                try:
+                    txt = candidate.decode("ascii")
+                    if all(c.isprintable() or c == '\n' for c in txt):
+                        # Extend: decrypt lebih banyak menggunakan keystream yang kita tahu
+                        # Keystream[pos:pos+clen] = C1[pos:pos+clen] ⊕ crib
+                        ks_frag = bytes(c1[pos+k] ^ crib_b[k] for k in range(clen))
+                        # Decrypt C2 di posisi itu dengan keystream
+                        p2_snippet = bytes(c2[pos+k] ^ ks_frag[k % clen] for k in range(min(clen+20, min_len-pos)))
+                        p2_txt = p2_snippet.decode("ascii","ignore")
+
+                        if flag_re.search(p2_txt) or flag_re.search(txt):
+                            fl = flag_re.search(p2_txt) or flag_re.search(txt)
+                            print(f"  \033[0;35m[FLAG?]\033[0m \033[1mCrib='{crib}' pos={pos} (pair {i1+1},{i2+1}):\033[0m")
+                            print(f"         P1 snippet: \033[0;32m{txt}\033[0m")
+                            print(f"         P2 snippet: \033[0;32m{p2_txt[:60]}\033[0m")
+                            print(f"         Flag      : \033[0;32m{fl.group()}\033[0m")
+                            found_any = True
+                        elif len(txt.strip()) >= 3 and txt.strip().isalpha():
+                            # Hit tapi bukan flag — simpan sebagai hint
+                            pass
+                except:
+                    pass
+
+    if not found_any:
+        # Tampilkan XOR dari dua hex pertama saja sebagai preview
+        try:
+            c1 = bytes.fromhex(hex_strings[0])
+            c2 = bytes.fromhex(hex_strings[1])
+            xored = bytes(c1[i]^c2[i] for i in range(min(len(c1),len(c2))))
+            print(f"  Preview C1⊕C2 (32 byte pertama): {xored[:32].hex()}")
+            printable = xored.decode("ascii","ignore")
+            readable = ''.join(c if c.isprintable() else '.' for c in printable)
+            print(f"  ASCII preview: \033[2m{readable[:64]}\033[0m")
+            print("  \033[2m[-]\033[0m Tidak ada crib drag hit — coba crib manual atau input lebih banyak ciphertext\033[0m")
+        except:
+            print("  \033[2m[-]\033[0m Tidak ada hex string yang valid untuk crib drag\033[0m")
+CRIBDRAG_PY
+
+  log_report "CRYPTO_CTF_SUITE: Selesai — NIGHTFALL, Vigenere, XOR_KPA, RSA_CommonMod, Bellcore, AbsoluteCinema, CribDrag"
+  echo ""
+  ok "CTF Crypto Attack Suite selesai — semua attack langsung dieksekusi."
+
+  # ════════════════════════════════════════════════════════════
   #  BAGIAN 4 — HASHING
   # ════════════════════════════════════════════════════════════
   divider
@@ -6138,6 +7101,8 @@ show_help() {
   echo -e "                  ${DIM}├─ Classical: Caesar/ROT brute, freq analysis, Vigenere Kasiski${NC}"
   echo -e "                  ${DIM}├─ Symmetric: AES ECB/CBC detect, padding oracle, XOR brute force${NC}"
   echo -e "                  ${DIM}├─ Asymmetric: RSA key parse, small-e/Wiener/common-factor hints${NC}"
+  echo -e "                  ${DIM}├─ CTF Suite: Vigenere auto-solve, XOR KPA, RSA Common Modulus,${NC}"
+  echo -e "                  ${DIM}│             Bellcore CRT Fault, NIGHTFALL chain, Crib Dragging${NC}"
   echo -e "                  ${DIM}├─ Hashing: MD5/SHA1/SHA256/bcrypt detect + john crack + online refs${NC}"
   echo -e "                  ${DIM}└─ Flaws: weak RNG, nonce reuse, entropy analysis, timing attack hints${NC}"
   echo ""
@@ -6268,6 +7233,45 @@ menu_multiselect() {
 }
 
 # ─────────────────────────────────────────
+#  HELPER — MINTA NAMA FOLDER LAPORAN
+# ─────────────────────────────────────────
+# Dipanggil setelah memilih modul, sebelum scan dimulai.
+# Men-set SESSION_REPORT_DIR ke "$REPORT_DIR/<nama_folder>".
+_prompt_session_folder() {
+  local default_name
+  default_name="session_$(date +%Y%m%d_%H%M%S)"
+
+  echo ""
+  echo -e "  ${BOLD}${C}┌─────────────────────────────────────────────────┐${NC}"
+  echo -e "  ${BOLD}${C}│${NC}  ${W}📂 Nama Folder Laporan${NC}                          ${BOLD}${C}│${NC}"
+  echo -e "  ${BOLD}${C}│${NC}  ${DIM}Hasil scan akan disimpan di folder ini.${NC}         ${BOLD}${C}│${NC}"
+  echo -e "  ${BOLD}${C}│${NC}  ${DIM}Lokasi: $REPORT_DIR/<nama_folder>${NC}"
+  echo -e "  ${BOLD}${C}│${NC}  ${DIM}[Enter] = pakai nama otomatis: ${W}$default_name${NC}${DIM}${NC}  ${BOLD}${C}│${NC}"
+  echo -e "  ${BOLD}${C}└─────────────────────────────────────────────────┘${NC}"
+  printf "  ${Y}▶${NC} Nama folder: "
+  read -r folder_input
+
+  # Gunakan default jika kosong
+  if [[ -z "$folder_input" ]]; then
+    folder_input="$default_name"
+  fi
+
+  # Sanitasi nama folder: ganti spasi dengan underscore, hapus karakter berbahaya
+  folder_input=$(echo "$folder_input" | tr ' ' '_' | tr -cd 'A-Za-z0-9._-')
+
+  # Fallback jika setelah sanitasi jadi kosong
+  if [[ -z "$folder_input" ]]; then
+    folder_input="$default_name"
+  fi
+
+  SESSION_REPORT_DIR="$REPORT_DIR/$folder_input"
+  mkdir -p "$SESSION_REPORT_DIR"
+
+  echo -e "  ${G}[✔]${NC} Folder laporan: ${W}$SESSION_REPORT_DIR${NC}"
+  echo ""
+}
+
+# ─────────────────────────────────────────
 #  MENU UTAMA — MODE PILIH
 # ─────────────────────────────────────────
 menu_mode_utama() {
@@ -6370,10 +7374,14 @@ menu_forensics() {
 
   menu_multiselect "Pilih Modul Forensics" "${modul_opts[@]}"
 
+  # Tanya nama folder laporan
+  _prompt_session_folder
+
   # Setup report
-  REPORT_FILE="$REPORT_DIR/$(basename "$target")_$(date +%Y%m%d_%H%M%S).txt"
+  REPORT_FILE="$SESSION_REPORT_DIR/$(basename "$target")_$(date +%Y%m%d_%H%M%S).txt"
   echo "FASFO Report — $(date)"  > "$REPORT_FILE"
   echo "Target: $target"        >> "$REPORT_FILE"
+  echo "Session: $SESSION_REPORT_DIR" >> "$REPORT_FILE"
   echo "---"                    >> "$REPORT_FILE"
 
   banner
@@ -6388,6 +7396,9 @@ menu_forensics() {
   done
 
   if [[ "$run_all" == true ]]; then
+    echo -e "  ${DIM}[i] Full Scan: menjalankan semua modul Forensics sesuai tipe file.${NC}"
+    echo -e "  ${DIM}    Modul Crypto tidak termasuk — gunakan Mode Crypto untuk analisis kriptografi.${NC}"
+    echo ""
     _run_full_scan "$target"
   else
     for idx in "${MENU_SELECTED[@]}"; do
@@ -6459,10 +7470,14 @@ menu_crypto() {
 
   menu_multiselect "Pilih Modul Crypto" "${crypto_opts[@]}"
 
+  # Tanya nama folder laporan
+  _prompt_session_folder
+
   # Setup report
-  REPORT_FILE="$REPORT_DIR/$(basename "$target")_crypto_$(date +%Y%m%d_%H%M%S).txt"
+  REPORT_FILE="$SESSION_REPORT_DIR/$(basename "$target")_crypto_$(date +%Y%m%d_%H%M%S).txt"
   echo "FASFO Crypto Report — $(date)"  > "$REPORT_FILE"
   echo "Target: $target"               >> "$REPORT_FILE"
+  echo "Session: $SESSION_REPORT_DIR"  >> "$REPORT_FILE"
   echo "---"                           >> "$REPORT_FILE"
 
   banner
@@ -6498,6 +7513,10 @@ menu_crypto() {
 
 _run_full_scan() {
   local target="$1"
+
+  # Crypto TIDAK termasuk Full Scan Forensics — gunakan Mode Crypto terpisah.
+  MOD_CRYPTO=false
+
   [[ -f "$target" ]] && mod_file_analysis "$target"
   [[ -f "$target" ]] && mod_steganography "$target"
   [[ -f "$target" ]] && mod_advanced_file "$target"
@@ -6539,16 +7558,8 @@ _run_full_scan() {
     fi
   fi
   mod_osint "$target"
-  # Crypto: jalankan pada file teks, pem, key, atau ciphertext
-  if [[ -f "$target" ]]; then
-    local _bn_fc _ft_fc
-    _bn_fc=$(basename "$target" | tr '[:upper:]' '[:lower:]')
-    _ft_fc=$(file --brief "$target" 2>/dev/null | tr '[:upper:]' '[:lower:]')
-    if echo "$_bn_fc" | grep -qiE '\.(pem|key|crt|cer|pub|txt|enc|cry|cipher|asc|gpg|pgp)$' || \
-       echo "$_ft_fc" | grep -qiE 'text|certificate|rsa|pgp|gpg|encrypted'; then
-      mod_cryptography "$target"
-    fi
-  fi
+  # Catatan: mod_cryptography TIDAK dijalankan di Full Scan Forensics.
+  # Gunakan Mode Crypto (menu terpisah) untuk analisis kriptografi.
 }
 
 # ─────────────────────────────────────────
@@ -6556,26 +7567,61 @@ _run_full_scan() {
 # ─────────────────────────────────────────
 menu_laporan() {
   section "Laporan Tersimpan"
-  local reports=()
-  while IFS= read -r f; do
-    reports+=("$(basename "$f") — $(du -sh "$f" 2>/dev/null | cut -f1)")
-  done < <(find "$REPORT_DIR" -maxdepth 1 -name "*.txt" -printf "%T@ %p\n" 2>/dev/null | \
-    sort -rn | head -10 | awk '{print $2}')
 
-  if [[ ${#reports[@]} -eq 0 ]]; then
+  # ── Langkah 1: Pilih folder sesi ────────────────────────
+  local session_dirs=()
+  local session_labels=()
+
+  while IFS= read -r d; do
+    local dname count latest
+    dname=$(basename "$d")
+    count=$(find "$d" -maxdepth 1 -name "*.txt" 2>/dev/null | wc -l)
+    latest=$(find "$d" -maxdepth 1 -name "*.txt" -printf "%T@\n" 2>/dev/null | \
+      sort -rn | head -1 | xargs -I{} date -d @{} '+%Y-%m-%d %H:%M' 2>/dev/null || echo "—")
+    session_dirs+=("$d")
+    session_labels+=("📁  $dname   [$count laporan] — terakhir: $latest")
+  done < <(find "$REPORT_DIR" -mindepth 1 -maxdepth 1 -type d \
+    -printf "%T@ %p\n" 2>/dev/null | sort -rn | awk '{print $2}')
+
+  # Juga cek flat .txt langsung di REPORT_DIR (laporan lama sebelum fitur folder)
+  local flat_count
+  flat_count=$(find "$REPORT_DIR" -maxdepth 1 -name "*.txt" 2>/dev/null | wc -l)
+  if [[ "$flat_count" -gt 0 ]]; then
+    session_dirs+=("$REPORT_DIR")
+    session_labels+=("📄  [Laporan lama — tanpa folder]   [$flat_count file]")
+  fi
+
+  if [[ ${#session_dirs[@]} -eq 0 ]]; then
     warn "Belum ada laporan tersimpan di $REPORT_DIR"
     return
   fi
 
-  menu_select "Pilih Laporan untuk Dibaca" "${reports[@]}"
+  menu_select "Pilih Folder Sesi" "${session_labels[@]}"
+  local chosen_dir="${session_dirs[$((MENU_IDX - 1))]}"
 
-  local chosen_file
-  chosen_file=$(find "$REPORT_DIR" -maxdepth 1 -name "*.txt" -printf "%T@ %p\n" 2>/dev/null | \
-    sort -rn | head -10 | awk '{print $2}' | sed -n "${MENU_IDX}p")
+  # ── Langkah 2: Pilih laporan di dalam folder sesi ───────
+  local reports=()
+  local report_files=()
+
+  while IFS= read -r f; do
+    report_files+=("$f")
+    reports+=("$(basename "$f")   ($(du -sh "$f" 2>/dev/null | cut -f1))")
+  done < <(find "$chosen_dir" -maxdepth 1 -name "*.txt" \
+    -printf "%T@ %p\n" 2>/dev/null | sort -rn | head -20 | awk '{print $2}')
+
+  if [[ ${#reports[@]} -eq 0 ]]; then
+    warn "Tidak ada laporan di folder: $chosen_dir"
+    return
+  fi
+
+  menu_select "Pilih Laporan untuk Dibaca" "${reports[@]}"
+  local chosen_file="${report_files[$((MENU_IDX - 1))]}"
 
   if [[ -f "$chosen_file" ]]; then
     echo ""
-    echo -e "  ${W}── Isi Laporan: $(basename "$chosen_file") ──${NC}"
+    echo -e "  ${W}── Folder : ${DIM}$(basename "$chosen_dir")${NC}"
+    echo -e "  ${W}── Laporan: ${DIM}$(basename "$chosen_file")${NC}"
+    echo ""
     cat "$chosen_file" | sed 's/^/  /'
   fi
 }
@@ -6620,7 +7666,7 @@ _parse_flags() {
       --adv-mem)   MOD_ADV_MEM=true;     MODE_ALL=false ;;
       --adv-net)   MOD_ADV_NET=true;     MODE_ALL=false ;;
       --adv-stego) MOD_ADV_STEGO=true;   MODE_ALL=false ;;
-      --crypto)    MOD_CRYPTO=true;      MODE_ALL=false ;;
+      --crypto|--crypto-ctf) MOD_CRYPTO=true; MODE_ALL=false ;;
     esac
   done
 }
@@ -6694,12 +7740,13 @@ _print_multiscan_summary() {
   echo ""
   echo -e "  ${M}${BOLD}[FLAG CANDIDATES — SEMUA FILE]${NC}"
   local any_flag=false
+  # Tentukan direktori pencarian: SESSION_REPORT_DIR jika ada, fallback ke REPORT_DIR
+  local _search_dir="${SESSION_REPORT_DIR:-$REPORT_DIR}"
   for i in "${!_targets[@]}"; do
     local tgt="${_targets[$i]}"
-    local rf="$REPORT_DIR/$(basename "$tgt")_"
-    # Cari laporan terbaru untuk file ini
+    # Cari laporan terbaru untuk file ini di folder sesi aktif
     local latest_report
-    latest_report=$(find "$REPORT_DIR" -maxdepth 1 -name "$(basename "$tgt")_*.txt" \
+    latest_report=$(find "$_search_dir" -maxdepth 1 -name "$(basename "$tgt")_*.txt" \
       -printf "%T@ %p\n" 2>/dev/null | sort -rn | head -1 | awk '{print $2}')
     if [[ -f "$latest_report" ]]; then
       local flags
@@ -6714,7 +7761,7 @@ _print_multiscan_summary() {
   [[ "$any_flag" == false ]] && echo -e "  ${DIM}Tidak ada flag yang ditemukan.${NC}"
 
   echo ""
-  echo -e "  ${W}Laporan disimpan di:${NC} ${DIM}$REPORT_DIR/${NC}"
+  echo -e "  ${W}Laporan disimpan di:${NC} ${DIM}${_search_dir}/${NC}"
   echo -e "  ${DIM}Scan selesai. Good luck on your CTF! 🚩${NC}"
   echo ""
 }
@@ -6766,6 +7813,9 @@ _run_multiscan_cli() {
   )"
   echo ""
 
+  # Tanya nama folder laporan (satu kali, berlaku ke semua file)
+  _prompt_session_folder
+
   # Progress bar helper
   _draw_progress() {
     local cur=$1 tot=$2
@@ -6798,9 +7848,10 @@ _run_multiscan_cli() {
     echo -e "  ${DIM}Ukuran: $fsize | Tipe: $ftype_s${NC}"
 
     # Setup report per file
-    REPORT_FILE="$REPORT_DIR/$(basename "$tgt")_$(date +%Y%m%d_%H%M%S).txt"
+    REPORT_FILE="$SESSION_REPORT_DIR/$(basename "$tgt")_$(date +%Y%m%d_%H%M%S).txt"
     echo "FASFO Report — $(date)"  > "$REPORT_FILE"
     echo "Target: $tgt"           >> "$REPORT_FILE"
+    echo "Session: $SESSION_REPORT_DIR" >> "$REPORT_FILE"
     echo "Batch scan: $i dari $total" >> "$REPORT_FILE"
     echo "---"                    >> "$REPORT_FILE"
 
@@ -6919,6 +7970,9 @@ _run_multiscan_interactive() {
 
   menu_multiselect "Pilih Modul untuk Semua File" "${modul_opts[@]}"
 
+  # Tanya nama folder laporan (satu kali untuk semua file)
+  _prompt_session_folder
+
   # Terjemahkan pilihan menu ke flag modul
   HAS_FORENSICS=true
   MODE_ALL=false
@@ -6974,9 +8028,10 @@ _run_multiscan_interactive() {
     ftype_s=$(file --brief "$tgt" 2>/dev/null | cut -c1-50)
     echo -e "  ${DIM}Ukuran: $fsize | Tipe: $ftype_s${NC}"
 
-    REPORT_FILE="$REPORT_DIR/$(basename "$tgt")_$(date +%Y%m%d_%H%M%S).txt"
+    REPORT_FILE="$SESSION_REPORT_DIR/$(basename "$tgt")_$(date +%Y%m%d_%H%M%S).txt"
     echo "FASFO Report — $(date)"       > "$REPORT_FILE"
     echo "Target: $tgt"               >> "$REPORT_FILE"
+    echo "Session: $SESSION_REPORT_DIR" >> "$REPORT_FILE"
     echo "Batch: $i dari $total"      >> "$REPORT_FILE"
     echo "---"                        >> "$REPORT_FILE"
 
@@ -7088,9 +8143,13 @@ main() {
       fi
       _is_valid_target "$TARGET" || { echo -e "${R}[!] Target tidak ditemukan: $TARGET${NC}"; exit 1; }
 
-      REPORT_FILE="$REPORT_DIR/$(basename "$TARGET")_$(date +%Y%m%d_%H%M%S).txt"
+      # Tanya nama folder laporan
+      _prompt_session_folder
+
+      REPORT_FILE="$SESSION_REPORT_DIR/$(basename "$TARGET")_$(date +%Y%m%d_%H%M%S).txt"
       echo "FASFO Report — $(date)" > "$REPORT_FILE"
       echo "Target: $TARGET"       >> "$REPORT_FILE"
+      echo "Session: $SESSION_REPORT_DIR" >> "$REPORT_FILE"
       echo "---"                   >> "$REPORT_FILE"
 
       banner

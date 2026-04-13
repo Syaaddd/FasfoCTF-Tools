@@ -3,9 +3,9 @@
 > **CTF Forensics Tool** — All-in-one forensics analysis suite designed for Capture The Flag competitions.
 
 <p align="center">
-  <strong>v5.0.0</strong> · 
-  Built for <strong>Kali Linux / Parrot OS</strong> · 
-  Bash-based CLI Tool · 14 Analysis Modules + Decode Engine + DNS Analysis Engine + Crypto Analysis
+  <strong>v5.0.0</strong> ·
+  Built for <strong>Kali Linux / Parrot OS</strong> ·
+  Bash-based CLI Tool · 14 Analysis Modules + Decode Engine + DNS Analysis Engine + Crypto Analysis + Advanced Cryptanalysis
 </p>
 
 ---
@@ -16,26 +16,28 @@
 
 ### Key Features
 
-✅ **14 forensics modules** — File, Stego, Network, Memory, Archive, Log, OSINT, Registry, Windows Artifacts, Crypto, + 4 Advanced modules  
-✅ **Crypto Analysis** — RSA factoring, AES/DES/ChaCha20 analysis, hash cracking (MD5/SHA/bcrypt), length extension attacks, SageMath integration  
-✅ **Advanced File Analysis** — Polyglot detection, XOR brute force, malware static triage, scalpel carving, entropy analysis  
-✅ **Advanced Memory/DFIR** — Hidden process detection, DLL injection, SSDT hooks, credential dumping, NTFS timeline, slack space  
-✅ **Advanced Network Forensics** — C2 beacon detection, covert channel analysis, TLS/SNI extraction, Zeek integration, ICMP exfil  
-✅ **Advanced Steganography** — Chi-square test, entropy analysis, Pillow channel extraction, DCT frequency domain, audio LSB  
-✅ **Windows Registry Analysis** — SAM/SYSTEM/NTUSER/SOFTWARE/SECURITY hive parsing + .reg export hex decode  
-✅ **Windows Artifact Analysis** — LNK shortcuts, Prefetch files, Event Logs (.evtx)  
-✅ **Standalone decode mode** — `fasfo --decode "string"` for instant decoding  
-✅ **Auto-decode integration** — Automatically decodes suspicious strings during scans  
-✅ **Interactive menu system** — No need to memorize flags, just pick options  
-✅ **Multi-file batch scanning** — Scan multiple files in one command  
-✅ **AWK/GREP/SORT log analysis** — Column-level precision parsing for auth, HTTP, syslog  
-✅ **Auto file-type detection** — Suggests relevant modules based on file type  
-✅ **Smart archive bruteforce** — 3-phase attack with CTF common passwords  
-✅ **Reversed flag detection** — Auto-detects `}...{PREFIX` patterns and decodes them  
-✅ **Log attack detection** — Brute force, SQLi, XSS, port scanning, scanner tools  
-✅ **Smart dependency checker** — Auto-detects tools and suggests fixes  
-✅ **WSL-aware** — Gracefully handles Windows Subsystem for Linux limitations  
-✅ **Report generation** — Structured text reports with built-in report viewer  
+✅ **14 forensics modules** — File, Stego, Network, Memory, Archive, Log, OSINT, Registry, Windows Artifacts, Crypto, + 4 Advanced modules
+✅ **Crypto Analysis** — RSA factoring, AES/DES/ChaCha20 analysis, hash cracking (MD5/SHA/bcrypt), length extension attacks, SageMath integration
+✅ **Advanced Cryptanalysis** — Bellcore CRT Fault Attack, NIGHTFALL Chain solver, AbsoluteCinema Math Solver, XOR Crib Dragging
+✅ **Advanced File Analysis** — Polyglot detection, XOR brute force, malware static triage, scalpel carving, entropy analysis
+✅ **Advanced Memory/DFIR** — Hidden process detection, DLL injection, SSDT hooks, credential dumping, NTFS timeline, slack space
+✅ **Advanced Network Forensics** — C2 beacon detection, covert channel analysis, TLS/SNI extraction, Zeek integration, ICMP exfil
+✅ **Advanced Steganography** — Chi-square test, entropy analysis, Pillow channel extraction, DCT frequency domain, audio LSB
+✅ **Windows Registry Analysis** — SAM/SYSTEM/NTUSER/SOFTWARE/SECURITY hive parsing + .reg export hex decode
+✅ **Windows Artifact Analysis** — LNK shortcuts, Prefetch files, Event Logs (.evtx)
+✅ **Standalone decode mode** — `fasfo --decode "string"` for instant decoding
+✅ **Auto-decode integration** — Automatically decodes suspicious strings during scans
+✅ **Interactive menu system** — No need to memorize flags, just pick options
+✅ **Multi-file batch scanning** — Scan multiple files in one command with session folder support
+✅ **AWK/GREP/SORT log analysis** — Column-level precision parsing for auth, HTTP, syslog
+✅ **Auto file-type detection** — Suggests relevant modules based on file type
+✅ **Smart archive bruteforce** — 3-phase attack with CTF common passwords
+✅ **Reversed flag detection** — Auto-detects `}...{PREFIX` patterns and decodes them
+✅ **Log attack detection** — Brute force, SQLi, XSS, port scanning, scanner tools
+✅ **Smart dependency checker** — Auto-detects tools and suggests fixes
+✅ **WSL-aware** — Gracefully handles Windows Subsystem for Linux limitations
+✅ **Report generation** — Structured text reports with built-in report viewer
+✅ **Entropy analysis** — Bits/byte classification for encrypted vs compressed vs plaintext data
 
 ---
 
@@ -75,13 +77,12 @@ FASFO auto-checks for these tools on first run (`fasfo --deps`):
 | **Advanced: Python** | `Pillow`, `numpy` | `pip3 install Pillow numpy` | Image analysis, DCT stego |
 | **Advanced: zeek** | `zeek` | `zeek` | Advanced network analysis |
 | **Advanced: objdump** | `objdump` | `binutils` | ELF/PE malware triage |
-| **Crypto: openssl** | `openssl` | `openssl` | RSA/cert analysis, AES encrypt/decrypt |
-| **Crypto: hashcat** | `hashcat` | `hashcat` | GPU hash cracking (MD5/SHA/bcrypt) |
-| **Crypto: pycryptodome** | `pycryptodome` | `pip3 install pycryptodome` | Python crypto: AES, RSA, DES, ChaCha20 |
-| **Crypto: hashpumpy** | `hashpumpy` | `pip3 install hashpumpy` | Hash length extension attacks |
-| **Crypto: z3-solver** | `z3-solver` | `pip3 install z3-solver` | SMT solver for reverse crypto |
-| **Crypto: SageMath** | `sage` | `sagemath` | RSA factoring, elliptic curves, DLP |
-| **Crypto: RsaCtfTool** | `RsaCtfTool` | Manual install | RSA multi-attack auto-solver |
+| **Crypto: openssl** | `openssl` | `openssl` | RSA key/cert parsing, DH param inspection, AES utilities |
+| **Crypto: hashcat** | `hashcat` | `hashcat` | GPU hash cracking (MD5/SHA/bcrypt) — suggested commands |
+| **Crypto: john** | `john` | `john` | Hash cracking with wordlist (raw-md5 mode) |
+| **Crypto: hashpumpy** | `hashpumpy` | `pip3 install hashpumpy` | Hash length extension attacks (MD5/SHA1/SHA256) |
+| **Crypto: SageMath** | `sage` | `sagemath` | RSA factoring, elliptic curves, DLP (reference tool) |
+| **Crypto: RsaCtfTool** | `RsaCtfTool` | Manual install | RSA multi-attack auto-solver (reference tool) |
 | **Stego: stegcrack** | `stegcrack` | `pip3 install stegcrack` | Steghide brute-force password cracker (Python) |
 | **Stego: stegseek** | `stegseek` | `sudo apt install stegseek` | **RECOMMENDED** — C++ native steghide cracker, much faster than stegcrack |
 | **Extras** | `stegsolve.jar` | Manual download | GUI steganalysis tool |
@@ -738,36 +739,38 @@ Analyzes Windows forensic artifact files commonly found in CTF challenges.
 
 ### 10. 🔐 Crypto Analysis (`--crypto`) — NEW in v5.0.0
 
-Comprehensive cryptography analysis for CTF crypto challenges. Supports RSA, AES, DES, ChaCha20, hash cracking, length extension attacks, and advanced mathematical cryptanalysis via SageMath.
+Comprehensive cryptography analysis for CTF crypto challenges. Supports RSA, AES, DES, ChaCha20, hash cracking, length extension attacks, classical cipher auto-solving, and advanced mathematical cryptanalysis via inline Python3.
 
 **Supported Cipher Types:**
 
 | Cipher | Analysis Capabilities |
 |--------|----------------------|
-| **RSA** | Public key extraction, modulus factoring, common attack detection (small e, Wiener, Hastad, common factor, Fermat), RsaCtfTool multi-attack auto-solver |
-| **AES** | Mode detection (ECB/CBC/CTR/GCM), padding analysis (PKCS#7, zero padding), key/IV extraction, pycryptodome-based decrypt |
-| **DES/3DES** | ECB/CBC mode detection, weak key detection, pycryptodome-based decrypt |
-| **ChaCha20** | Stream cipher analysis, nonce/key extraction |
-| **Hash Functions** | Auto-detection of hash type (MD5, SHA1, SHA256, SHA512, bcrypt, NTLM), GPU-accelerated cracking via hashcat |
-| **Length Extension** | MD5/SHA1/SHA256 hash length extension attacks via hashpumpy |
+| **Classical Ciphers** | Caesar/ROT brute force (1-25) with flag detection, frequency analysis (Index of Coincidence), Vigenere Kasiski examination + auto-solve, Atbash, transposition cipher detection |
+| **RSA** | Public key extraction (PEM/DER), modulus factoring, small e=3 (cube root/Hastad), small modulus (<512 bit), common modulus attack, common factor between moduli, **Bellcore CRT Fault Attack** (factor N from faulty signatures), trivial factor detection |
+| **AES/DES/ChaCha20** | Block size alignment (mod 16/8), ECB mode detection (duplicate 16-byte blocks), CBC null IV detection, PKCS#7 padding analysis, padding oracle hints |
+| **XOR** | Single-byte brute force (0x01-0xFF), repeating-key XOR via **Known-Plaintext Attack (KPA)**, **XOR Crib Dragging** (cross-ciphertext recovery), cross-file crib dragging |
+| **Hash Functions** | Auto-detection (MD5/SHA1/SHA256/SHA512/bcrypt/NTLM), `john` cracking with wordlist, GPU-accelerated `hashcat` command suggestions, length extension attack hints (`hashpump`/`hashpumpy`) |
+| **Diffie-Hellman / ECC** | DH/ECC/ECDSA keyword detection, `openssl dhparam` analysis, small subgroup/weak prime hints, ECDSA k-reuse detection |
 
-**Analysis Pipeline:**
+**CTF Crypto Attack Suite (auto-executed):**
 
-1. **Input Detection** — Auto-detects RSA keys (PEM/DER), encrypted files, hash strings, certificates
-2. **RSA Analysis** — Extracts public key parameters (n, e), checks for common vulnerabilities:
-   - Small public exponent (e=3, e=5)
-   - Wiener's attack (small private exponent)
-   - Hastad's broadcast attack
-   - Common modulus attack
-   - Fermat factoring (close primes)
-   - RsaCtfTool integration for automated multi-attack solving
-3. **Hash Analysis** — Identifies hash type by length/format, attempts hashcat cracking with rockyou.txt
-4. **Symmetric Cipher Analysis** — Detects cipher mode, extracts key/IV if available, attempts decryption
-5. **Certificate Analysis** — OpenSSL-based X.509 certificate inspection, key extraction
-6. **SageMath Integration** — Elliptic curve cryptography (ECC), discrete logarithm problems, advanced RSA factoring
-7. **Z3 SMT Solver** — Symbolic execution for reverse crypto challenges, constraint solving
+| Attack | Description |
+|--------|-------------|
+| **NIGHTFALL Chain** | Layered Atbash + Caesar brute-force (5 layer combos: Atbash, Atbash→Caesar, Caesar→Atbash, Caesar, Atbash→Caesar→Atbash) with prefix oracle (`CTF{`, `FLAG{`, `RAO{`, `HTB{`, `picoCTF{`) |
+| **VIGENERE Solver** | Kasiski examination + Friedman IC per column + chi-squared frequency analysis to auto-recover key (tests all key lengths 2-16). Also checks acrostic (first letter of each word/line) |
+| **XOR KPA** | Known-plaintext attack using 15+ known plaintexts (CTF{, FLAG{, PNG/ZIP/PDF/PEM/ELF magic, "the ", etc.) to recover repeating XOR key. Cross-file crib dragging against peer files in same directory |
+| **RSA Common Modulus** | Extended Euclidean Algorithm: if N same, e1≠e2, gcd(e1,e2)=1 → recovers M = C1^s × C2^t mod N. Also common factor attack between moduli |
+| **Bellcore CRT Fault** | gcd(S_faulty^e - M, N) = p → factorize N from faulty RSA-CRT signatures, recover d, decrypt other ciphertexts |
+| **AbsoluteCinema** | Perfect square + digit constraint solver: filters by unique digits, no zero, digit sum target, even/odd digits, palindrome |
+| **XOR Crib Dragging** | C1⊕C2 = P1⊕P2: slides cribs across XOR result of two same-key ciphertexts to recover plaintext |
 
-**Tools:** `openssl`, `hashcat`, `pycryptodome` (Python), `hashpumpy` (Python), `z3-solver` (Python), `SageMath`, `RsaCtfTool`
+**Analysis Pipeline (5 Sections):**
+
+1. **[1/5] Classical Ciphers** — Caesar/ROT brute force, frequency analysis (letter frequency bar chart + IC computation), Atbash, Vigenere Kasiski hint, transposition cipher detection
+2. **[2/5] Modern Symmetric Crypto** — AES/DES block alignment analysis, ECB duplicate block detection, CBC IV/padding oracle hints, crypto keyword scanning (AES/DES/Blowfish/ChaCha/RC4/IV/nonce)
+3. **[3/5] Asymmetric Cryptography + CTF Suite** — RSA key/cert parsing via `openssl`, parameter scan (n, e, d, p, q, c), attack identification, DH/ECC detection, NIGHTFALL chain, VIGENERE solver, XOR KPA, RSA common modulus, Bellcore CRT, AbsoluteCinema, XOR Crib Dragging
+4. **[4/5] Hashing** — Hash type detection, `john` cracking, `hashcat` command suggestions, length extension attack hints, online crack service references (crackstation.net, hashes.com)
+5. **[5/5] Crypto Implementation Flaws** — Weak RNG detection (time-based seeds, hardcoded seeds), nonce/IV reuse detection (block entropy, duplicate blocks), custom crypto/XOR analysis, timing attack hints (strcmp/memcmp/oracle patterns), entropy analysis (bit/byte classification: encrypted vs compressed vs plaintext)
 
 ---
 
@@ -970,6 +973,27 @@ When you select a file, FASFO auto-detects its type and suggests relevant module
     → RSA key / hash / encrypted file — disarankan: [10] Crypto Analysis
 ```
 
+### Crypto Sub-Menu
+
+When Crypto Analysis is selected, a dedicated sub-menu appears:
+
+```
+┌─────────────────────────────────────────┐
+│  Pilih Modul Cryptography               │
+├─────────────────────────────────────────┤
+│  [0] Full Crypto -- Semua modul crypto  │
+│  [1] Classic Cipher -- Caesar,ROT,Vigen │
+│  [2] Modern Cipher -- AES, DES, RSA     │
+│  [3] Hash Cracking -- MD5,SHA vs rockyou│
+│  [4] XOR Analysis -- Brute, KPA, Crib   │
+│  [5] RSA Analysis -- factor N, small e  │
+│  [6] Nonce/IV Reuse -- deteksi reuse    │
+│  [7] Encoding Chains -- b64,hex,morse   │
+│  [8] PKI/Cert Inspect -- PEM, X.509     │
+│  [0] Keluar / Batal                     │
+└─────────────────────────────────────────┘
+```
+
 ### Report Viewer
 
 Browse and read previously saved scan reports directly from the menu — no need to navigate the filesystem.
@@ -1092,6 +1116,13 @@ At the end of each scan, FASFO displays:
 26. **Stegcrack integration** — Automated steghide password brute-forcing with rockyou.txt wordlist, progress display, and auto-extraction
 27. **Stegseek integration** — C++ native steghide cracker (MUCH faster than stegcrack), with --seed mode for steghide detection without wordlist
 28. **Decode engine optimization** — Caesar brute force now uses single python3 spawn for all 24 ROT shifts (instead of 24 separate spawns)
+29. **Bellcore CRT Fault Attack** — Exploit faulty RSA-CRT signatures to factor modulus N
+30. **NIGHTFALL Chain solver** — Layered classical cipher solver (Atbash + Caesar)
+31. **AbsoluteCinema Math Solver** — Constraint-based brute force for perfect square + digit pattern challenges
+32. **XOR Crib Dragging** — Recover XOR key from two ciphertexts encrypted with same key
+33. **Frequency analysis** — Index of Coincidence (IC) calculation for classical cipher analysis
+34. **Weak RNG detection** — Identifies time-based seeds, hardcoded seeds, and custom crypto implementations
+35. **Nonce/IV reuse detection** — Block entropy analysis to detect encryption flaws
 
 ---
 
@@ -1140,8 +1171,13 @@ export DISPLAY=:0
 ### Current Version: `5.0.0`
 
 **Changelog v5.0.0:**
-- 🆕 **Crypto Analysis Module (`--crypto`)** — Comprehensive cryptography analysis for CTF crypto challenges
+- 🆕 **Crypto Analysis Module (`--crypto`)** — Comprehensive cryptography analysis for CTF crypto challenges (~1400 lines)
 - 🆕 **RSA Analysis** — Public key extraction, modulus factoring, common attack detection (small e, Wiener, Hastad, common factor)
+- 🆕 **Bellcore CRT Fault Attack** — Factor RSA modulus N from faulty CRT signatures
+- 🆕 **NIGHTFALL Chain** — Layered Atbash + Caesar decoding solver with prefix oracle
+- 🆕 **AbsoluteCinema Math Solver** — Perfect square + digit constraint brute force engine
+- 🆕 **XOR Crib Dragging** — Recover key from two ciphertexts encrypted with same XOR key
+- 🆕 **Classical Cipher Suite** — Caesar/ROT brute force, frequency analysis (Index of Coincidence), Vigenere Kasiski examination
 - 🆕 **Hash Cracking** — GPU-accelerated hashcat integration with auto-detection of hash types (MD5, SHA1, SHA256, SHA512, bcrypt, NTLM)
 - 🆕 **AES/DES/ChaCha20 Analysis** — pycryptodome-based cipher analysis, mode detection (ECB/CBC/CTR/GCM), padding analysis
 - 🆕 **Length Extension Attacks** — hashpumpy integration for MD5/SHA1/SHA256 hash length extension
@@ -1149,10 +1185,14 @@ export DISPLAY=:0
 - 🆕 **RsaCtfTool Integration** — Multi-attack RSA solver (auto-detects and applies best attack)
 - 🆕 **Z3 SMT Solver** — Symbolic execution for reverse crypto challenges
 - 🆕 **OpenSSL Integration** — Certificate analysis, RSA key inspection, AES encrypt/decrypt utilities
+- 🆕 **Entropy Analysis** — Bits/byte classification (encrypted vs compressed vs plaintext)
+- 🆕 **Weak RNG Detection** — Time-based seeds, hardcoded seeds, custom crypto detection
+- 🆕 **Nonce/IV Reuse Detection** — Block entropy analysis, identical block detection
+- 🆕 **Side-Channel Hints** — Timing attack detection (strcmp, memcmp, oracle patterns)
 - 🆕 **Crypto tool dependency check** — New "Crypto Tools (v5.0.0)" section in `--deps`
 - 🆕 **Stegseek integration** — C++ native steghide cracker (much faster than stegcrack), with --seed mode for detection without wordlist
 - 🆕 **Decode engine optimization** — Caesar brute force uses single python3 spawn for all 24 ROT shifts
-- 🆕 **Total codebase** — 7100+ lines of Bash
+- 🆕 **Total codebase** — 7700+ lines of Bash
 
 **Changelog v4.0.0:**
 - 🆕 **4 Advanced Modules** — Deep forensics analysis for complex CTF challenges
