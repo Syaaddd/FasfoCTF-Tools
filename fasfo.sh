@@ -110,7 +110,7 @@ _decode_hit() {
 # ── Cek apakah hasil decode terlihat seperti flag ─────
 _looks_like_flag() {
   local s="$1"
-  echo "$s" | grep -qiE '^[A-Za-z0-9_!@#$%^&*-]{3,}\{[^}]+\}$|^\{[A-Za-z0-9_!@#$%^&*-]+\}$'
+  echo "$s" | grep -qiE '^[A-Za-z0-9_!@#$%^&*=-]{3,}\{[^}]+\}$|^\{[A-Za-z0-9_!@#$%^&*=-]+\}$'
 }
 
 # ── Cek apakah string printable (hasil decode valid) ──
@@ -467,6 +467,76 @@ decode_flag_candidates() {
 
   for cand in "${candidates[@]}"; do
     decode_string "$cand"
+
+    # ── BONUS: jika kandidat berbentuk XXX{...} dengan prefix tidak dikenal,
+    #    coba Atbash + semua Caesar shift → cari prefix CTF resmi ──
+    if echo "$cand" | grep -qE '^[A-Za-z]{2,10}\{[^}]{3,}\}$'; then
+      local prefix_known
+      prefix_known=$(echo "$cand" | grep -iE '^(CTF|FLAG|flag|ctf|HTB|picoCTF|PCTF|RACTF)\{')
+      if [[ -z "$prefix_known" ]]; then
+        # Kandidat prefix tidak dikenal → jalankan mini chain solver
+        local chain_result
+        chain_result=$(CHAIN_TRY="$cand" python3 - <<'CHAIN_TRY_PY'
+import os, re
+text = os.environ.get("CHAIN_TRY","")
+REAL = ["CTF{","FLAG{","flag{","ctf{","HTB{","picoCTF{","PCTF{","RACTF{","ADBC{","ADB{"]
+def atbash(s):
+    r=""
+    for c in s:
+        if c.isalpha():
+            base=ord('A') if c.isupper() else ord('a')
+            r+=chr(base+25-(ord(c)-base))
+        else: r+=c
+    return r
+def caesar(s,sh):
+    r=""
+    for c in s:
+        if c.isalpha():
+            base=ord('A') if c.isupper() else ord('a')
+            r+=chr((ord(c)-base+sh)%26+base)
+        else: r+=c
+    return r
+def readable(s):
+    clean=re.sub(r'[a-z0-9_\-]','',s.lower())
+    return (len(s)-len(clean))/max(len(s),1)
+flag_re=re.compile(r'[A-Za-z0-9_]{2,12}\{[^}]{3,80}\}')
+ab=atbash(text)
+combos=[("Atbash",ab)]
+for sh in range(26):
+    combos.append((f"Atbash→Caesar(+{sh})",caesar(ab,sh)))
+    combos.append((f"Caesar(+{sh})→Atbash",atbash(caesar(text,sh))))
+for label,result in combos:
+    m=flag_re.search(result)
+    if m:
+        val=m.group()
+        inner=val[val.index('{')+1:-1]
+        real=any(result.upper().startswith(p.upper()) for p in REAL)
+        score=readable(inner)
+        if real:
+            print(f"  \033[0;32m★ [FLAG CONFIRMED]\033[0m  \033[1m{label}\033[0m  →  \033[0;32m\033[1m{val}\033[0m")
+        elif score>=0.80:
+            print(f"  \033[0;36m[?]\033[0m  \033[2m{label}\033[0m  →  {val}  \033[2m(readable={score:.0%})\033[0m")
+CHAIN_TRY_PY
+)
+        if [[ -n "$chain_result" ]]; then
+          echo -e "  ${C}[Chain solve — ${cand:0:20}...]${NC}"
+          echo "$chain_result"
+          echo ""
+          # ── Log every CONFIRMED flag to report AND DECODE_HITS array ──
+          while IFS= read -r cline; do
+            if echo "$cline" | grep -q "FLAG CONFIRMED"; then
+              local confirmed_val
+              confirmed_val=$(echo "$cline" | grep -oE '[A-Za-z0-9_]{2,12}\{[^}]+\}' | head -1)
+              if [[ -n "$confirmed_val" ]]; then
+                log_report "FLAG_CONFIRMED: $confirmed_val"
+                # Also add to DECODE_HITS so it appears in SCAN SUMMARY
+                DECODE_HITS+=("[CHAIN_SOLVER] $confirmed_val")
+              fi
+            fi
+          done <<< "$chain_result"
+        fi
+      fi
+    fi
   done
 
   # Tampilkan ringkasan DECODE_HITS
@@ -478,6 +548,246 @@ decode_flag_candidates() {
       log_report "DECODE_HIT: $hit"
     done
   fi
+}
+
+# ════════════════════════════════════════════════════
+#  CHAIN CIPHER SOLVER (fasfo --chain "ciphertext" [CIPHER1,CIPHER2,...])
+#  Mendekripsi teks berlapis dengan urutan cipher yang ditentukan.
+#
+#  Cipher yang didukung:
+#    atbash               — balik alfabet (A↔Z)
+#    caesar:N             — Caesar shift -N (dekripsi)
+#    caesar_brute         — brute-force semua shift 0-25
+#    vigenere:KEY         — Vigenere dengan kunci KEY
+#    rot13                — ROT13 (alias caesar:13)
+#    base64               — decode Base64
+#    hex                  — decode Hex
+#    reverse              — balik string
+#    morse                — decode Morse code
+#    l33t                 — decode leet → huruf biasa
+#    nightfall            — brute Atbash+Caesar semua kombinasi (prefix oracle)
+#
+#  Contoh:
+#    fasfo --chain "RAO{ri4bb1r_r1em3c_h4ba3c}"
+#    fasfo --chain "RAO{ri4bb1r_r1em3c_h4ba3c}" "atbash,caesar:6"
+#    fasfo --chain "ciphertext" "base64,atbash,caesar_brute"
+# ════════════════════════════════════════════════════
+run_chain_mode() {
+  local input="${1:-}"
+  local chain_spec="${2:-}"
+
+  banner
+  section "FASFO Chain Cipher Solver"
+  echo ""
+
+  if [[ -z "$input" ]]; then
+    echo -e "  ${Y}[!]${NC} Masukkan ciphertext:"
+    printf "  ${Y}▶${NC} Ciphertext: "
+    read -r input
+    echo ""
+    echo -e "  ${C}[*]${NC} Urutan cipher (kosongkan = brute-force otomatis)"
+    echo -e "  ${DIM}Contoh: atbash,caesar:6  /  base64,rot13  /  atbash,caesar_brute${NC}"
+    printf "  ${Y}▶${NC} Chain: "
+    read -r chain_spec
+    echo ""
+  fi
+
+  info "Input    : ${BOLD}${input:0:80}${NC}"
+  info "Chain    : ${BOLD}${chain_spec:-[AUTO — brute-force semua kombinasi]}${NC}"
+  divider
+  echo ""
+
+  [[ -z "$REPORT_FILE" ]] && REPORT_FILE="/dev/null"
+
+  CHAIN_INPUT="$input" CHAIN_SPEC="$chain_spec" python3 - <<'CHAIN_PY'
+import os, sys, re, base64, itertools
+
+R ="\033[0;31m"; G ="\033[0;32m"; Y ="\033[0;33m"; C ="\033[0;36m"
+M ="\033[0;35m"; W ="\033[1;37m"; DIM="\033[2m";   BLD="\033[1m"; NC="\033[0m"
+
+text       = os.environ.get("CHAIN_INPUT","")
+chain_spec = os.environ.get("CHAIN_SPEC","").strip()
+
+def atbash(s):
+    r=""
+    for c in s:
+        if c.isalpha():
+            base=ord('A') if c.isupper() else ord('a')
+            r+=chr(base+25-(ord(c)-base))
+        else: r+=c
+    return r
+
+def caesar(s,shift):
+    r=""
+    for c in s:
+        if c.isalpha():
+            base=ord('A') if c.isupper() else ord('a')
+            r+=chr((ord(c)-base+shift)%26+base)
+        else: r+=c
+    return r
+
+def vigenere_decrypt(s,key):
+    r=""; key=key.upper(); ki=0
+    for c in s:
+        if c.isalpha():
+            base=ord('A') if c.isupper() else ord('a')
+            shift=ord(key[ki%len(key)])-ord('A')
+            r+=chr((ord(c)-base-shift)%26+base); ki+=1
+        else: r+=c
+    return r
+
+def b64_decode(s,_=None):
+    try: return base64.b64decode(s+'='*(-len(s)%4)).decode('utf-8',errors='replace')
+    except: return s
+
+def hex_decode(s,_=None):
+    try: return bytes.fromhex(re.sub(r'[^0-9a-fA-F]','',s)).decode('utf-8',errors='replace')
+    except: return s
+
+def morse_decode(s,_=None):
+    M={'.-':'A','-.':'B','-.-.':'C','-..':'D','.':'E','..-.':'F','--.':'G',
+       '....':'H','..':'I','.---':'J','-.-':'K','.-..':'L','--':'M','-.':'N',
+       '---':'O','.--.':'P','--.-':'Q','.-.':'R','...':'S','-':'T','..-':'U',
+       '...-':'V','.--':'W','-..-':'X','-.--':'Y','--..':'Z','-----':'0',
+       '.----':'1','..---':'2','...--':'3','....-':'4','.....':'5','-....':'6',
+       '--...':'7','---..':'8','----.':'9'}
+    return ' '.join(''.join(M.get(l,'?') for l in w.split()) for w in s.strip().split('   '))
+
+def l33t_decode(s,_=None):
+    t={'4':'a','@':'a','3':'e','1':'i','!':'i','0':'o','5':'s','$':'s','7':'t','|':'l'}
+    return ''.join(t.get(c,c) for c in s)
+
+CMAP={'atbash':lambda s,a:atbash(s),'caesar':lambda s,a:caesar(s,-int(a)) if a else s,
+      'rot13':lambda s,a:caesar(s,13),'vigenere':lambda s,a:vigenere_decrypt(s,a) if a else s,
+      'base64':b64_decode,'hex':hex_decode,'reverse':lambda s,a:s[::-1],
+      'morse':morse_decode,'l33t':l33t_decode}
+
+REAL_PFXS=["CTF{","FLAG{","flag{","ctf{","HTB{","picoCTF{","PCTF{","RACTF{","ADBC{","ADB{"]
+FLAG_RE=re.compile(r'[A-Za-z0-9_]{2,12}\{[^}]{3,80}\}')
+
+def readable(s):
+    clean=re.sub(r'[a-z0-9_\-]','',s.lower())
+    return (len(s)-len(clean))/max(len(s),1)
+
+def looks_flag(s):
+    m=FLAG_RE.search(s)
+    if not m: return False
+    inner=m.group()[m.group().index('{')+1:-1]
+    return any(s.upper().startswith(p.upper()) for p in REAL_PFXS) or readable(inner)>=0.80
+
+def apply_cipher(s,tok):
+    tok=tok.strip().lower()
+    name,arg=(tok.split(':',1) if ':' in tok else (tok,''))
+    fn=CMAP.get(name)
+    return (fn(s,arg) if fn else s), tok
+
+# ── Mode eksplisit ──
+def run_explicit(text,chain_spec):
+    steps=[s.strip() for s in chain_spec.split(',') if s.strip()]
+    if 'caesar_brute' in [s.lower() for s in steps]:
+        run_brute(text,steps); return
+    print(f"  {C}[*]{NC} Chain: {BLD}{' → '.join(steps)}{NC}\n  {DIM}{'─'*60}{NC}\n")
+    cur=text
+    print(f"  {W}Layer 0 (Input){NC}\n  {DIM}{cur[:100]}{NC}\n")
+    for i,tok in enumerate(steps,1):
+        prev=cur; cur,label=apply_cipher(cur,tok)
+        flag=looks_flag(cur)
+        mark=f"  {G}★ FLAG!{NC}" if flag else ""
+        print(f"  {W}Layer {i} — {BLD}{label}{NC}")
+        print(f"  {DIM}Input : {prev[:80]}{NC}")
+        print(f"  {G if flag else C}{cur[:100]}{NC}{mark}\n")
+    print(f"  {DIM}{'─'*60}{NC}  {W}Hasil akhir:{NC}")
+    m=FLAG_RE.search(cur)
+    if m: print(f"  {G}{BLD}✔ FLAG : {m.group()}{NC}")
+    elif looks_flag(cur): print(f"  {M}{BLD}✔ FLAG? : {cur[:100]}{NC}")
+    else: print(f"  {Y}→ {cur[:100]}{NC}\n  {DIM}(Tidak terdeteksi flag — coba urutan/cipher berbeda){NC}")
+
+def run_brute(text,steps):
+    hits=[]
+    bi=[i for i,s in enumerate(steps) if s.lower()=='caesar_brute']
+    for sh in range(26):
+        sv=[f'caesar:{sh}' if i in bi else s for i,s in enumerate(steps)]
+        cur=text
+        for tok in sv: cur,_=apply_cipher(cur,tok)
+        if looks_flag(cur):
+            m=FLAG_RE.search(cur)
+            hits.append((' → '.join(sv), m.group() if m else cur[:80]))
+    if hits:
+        print(f"  {G}[+]{NC} {len(hits)} kombinasi ditemukan:\n")
+        for lbl,val in hits:
+            print(f"  {M}[FLAG?]{NC} {BLD}{lbl}{NC}\n         {G}{val}{NC}\n")
+    else:
+        print(f"  {Y}[!]{NC} Tidak ada shift yang menghasilkan flag.")
+        for sh in range(26):
+            cur=text
+            for tok in [f'caesar:{sh}' if i in bi else s for i,s in enumerate(steps)]:
+                cur,_=apply_cipher(cur,tok)
+            print(f"  ROT-{sh:02d}: {DIM}{cur[:60]}{NC}")
+
+# ── Mode NIGHTFALL auto-brute ──
+def run_nightfall(text):
+    print(f"  {C}[*]{NC} Mode {BLD}NIGHTFALL Auto-Brute{NC}\n  {DIM}{'─'*60}{NC}\n")
+    hits=[]; seen=set()
+    lines=[l.strip() for l in text.splitlines() if len(l.strip())>=4] or [text.strip()]
+    for line in lines[:50]:
+        ab=atbash(line)
+        combos=[("Atbash",ab)]
+        for sh in range(26):
+            combos+=[(f"Atbash → Caesar(+{sh})",caesar(ab,sh)),
+                     (f"Caesar(+{sh}) → Atbash",atbash(caesar(line,sh))),
+                     (f"Caesar(+{sh})",caesar(line,sh))]
+        for sh in range(26):
+            for sh2 in range(26):
+                combos.append((f"Caesar(+{sh})→Atbash→Caesar(+{sh2})",
+                               caesar(atbash(caesar(line,sh)),sh2)))
+        for label,result in combos:
+            if looks_flag(result):
+                m=FLAG_RE.search(result)
+                val=m.group() if m else result[:80]
+                if val not in seen:
+                    seen.add(val)
+                    real=any(result.upper().startswith(p.upper()) for p in REAL_PFXS)
+                    hits.append((0 if real else 1,label,val,line))
+    hits.sort(key=lambda x:x[0])
+    if hits:
+        real_h=[h for h in hits if h[0]==0]
+        other_h=[h for h in hits if h[0]==1]
+        if real_h:
+            print(f"  {G}[+]{NC} {BLD}{len(real_h)} FLAG CONFIRMED:{NC}\n")
+            for _,lbl,val,src in real_h:
+                print(f"  {G}★ [CONFIRMED]{NC} {BLD}{lbl}{NC}")
+                print(f"     Input: {DIM}{src[:60]}{NC}")
+                print(f"     {G}{BLD}✔ {val}{NC}\n")
+        if other_h:
+            print(f"  {DIM}[Kandidat lain — readable ≥80%] ({len(other_h)} hasil):{NC}")
+            for _,lbl,val,_ in other_h[:5]:
+                print(f"  {C}[?]{NC} {DIM}{lbl}{NC} → {val}")
+            if len(other_h)>5: print(f"  {DIM}... dan {len(other_h)-5} lagi{NC}")
+    else:
+        print(f"  {Y}[-]{NC} Tidak ada hasil readable. Coba: fasfo --chain \"text\" \"base64,atbash,caesar_brute\"")
+
+if not text:
+    print(f"  {R}[!]{NC} Tidak ada input."); sys.exit(1)
+
+if not chain_spec:
+    run_nightfall(text)
+elif 'nightfall' in chain_spec.lower():
+    # nightfall di dalam chain — terapkan pre/post steps
+    toks=[s.strip() for s in chain_spec.split(',')]
+    nf_idx=next(i for i,t in enumerate(toks) if t.lower()=='nightfall')
+    cur=text
+    for tok in toks[:nf_idx]: cur,_=apply_cipher(cur,tok)
+    if nf_idx>0: print(f"  {C}[*]{NC} Pre-chain → {DIM}{cur[:80]}{NC}\n")
+    run_nightfall(cur)
+else:
+    run_explicit(text,chain_spec)
+CHAIN_PY
+
+  local chain_report="$(_active_report_dir)/chain_$(date +%Y%m%d_%H%M%S).txt"
+  { echo "FASFO Chain Report — $(date)"; echo "Input : $input"; echo "Chain : ${chain_spec:-AUTO}"; } > "$chain_report" 2>/dev/null
+  echo ""; divider
+  echo -e "  ${W}Report:${NC} $chain_report"
+  echo -e "  ${DIM}Tip: fasfo --chain \"ciphertext\" \"atbash,caesar:6\"${NC}"; echo ""
 }
 
 # ────────────────────────────────────────────────────
@@ -4764,7 +5074,12 @@ print('  └─ ECDSA k reuse   → k bisa dihitung, private key bocor')
 import os, re, sys
 
 text = os.environ.get("NIGHTFALL_INPUT", "")
-known_prefixes = ["CTF{","FLAG{","flag{","ctf{","HTB{","picoCTF{","PCTF{","RAO{","KEY{","RACTF{"]
+
+# ── Prefix yang BENAR-BENAR diakui sebagai flag oleh kompetisi CTF ──
+# RAO{ / IZL{ dll adalah hasil enkripsi dari CTF{, bukan flag asli
+REAL_PREFIXES = ["CTF{","FLAG{","flag{","ctf{","HTB{","picoCTF{","PCTF{",
+                 "RACTF{","NahamCon{","TetCTF{","DawgCTF{","WPI{","ASIS{",
+                 "X-MAS{","corCTF{","idek{","uiuctf{","bi0s{","ADBC{","ADB{"]
 
 def atbash(s):
     r = ""
@@ -4786,25 +5101,42 @@ def caesar(s, shift):
             r += c
     return r
 
-flag_re = re.compile(r'[A-Za-z0-9_]{2,10}\{[^}]{3,}\}')
-hits = []
-seen_vals = set()
+flag_re  = re.compile(r'[A-Za-z0-9_]{2,12}\{[^}]{3,80}\}')
 
-def try_result(method, result, source_line):
-    fl = flag_re.search(result)
-    val = fl.group() if fl else None
-    # Cek prefix oracle
-    prefix_hit = any(result.upper().startswith(pf.upper()) for pf in known_prefixes)
-    if fl and val not in seen_vals:
-        seen_vals.add(val)
-        hits.append((method, val, source_line))
-    elif prefix_hit:
-        snippet = result[:80]
-        if snippet not in seen_vals:
-            seen_vals.add(snippet)
-            hits.append((method, snippet, source_line))
+# ── Skor keterbacaan isi flag: lebih tinggi = lebih mungkin plaintext ──
+# Karakter underscore, huruf, angka lebih baik daripada campuran aksen/noise
+def readability_score(flag_body):
+    """Hitung berapa persen karakter di dalam {} yang 'readable': a-z, 0-9, _, -"""
+    clean = re.sub(r'[a-z0-9_\-]', '', flag_body.lower())
+    if not flag_body:
+        return 0
+    return (len(flag_body) - len(clean)) / len(flag_body)
 
-# Scan tiap baris di konten
+def is_real_prefix(s):
+    return any(s.upper().startswith(p.upper()) for p in REAL_PREFIXES)
+
+hits   = []    # (priority, method, val, src)  — priority 0=best
+seen   = set()
+
+def try_result(method, result, source_line, depth=1):
+    m = flag_re.search(result)
+    if not m:
+        return
+    val = m.group()
+    if val in seen:
+        return
+    # Ekstrak isi dalam kurung kurawal
+    inner = val[val.index('{')+1:-1]
+    score = readability_score(inner)
+    real  = is_real_prefix(val)
+    # Hanya simpan jika:
+    #   a) prefix diakui sebagai CTF flag, ATAU
+    #   b) readable score >= 0.8 (>80% karakter adalah a-z/0-9/_/-)
+    if real or score >= 0.80:
+        seen.add(val)
+        priority = 0 if real else 1
+        hits.append((priority, method, val, source_line, score))
+
 lines_checked = 0
 for raw_line in text.splitlines():
     line = raw_line.strip()
@@ -4821,35 +5153,50 @@ for raw_line in text.splitlines():
 
     # [B] Atbash → Caesar ROT 0-25
     for shift in range(26):
-        try_result(f"Atbash→Caesar(ROT{shift})", caesar(ab, shift), line)
+        try_result(f"Atbash → Caesar(+{shift})", caesar(ab, shift), line)
 
     # [C] Caesar → Atbash
     for shift in range(26):
-        try_result(f"Caesar(ROT{shift})→Atbash", atbash(caesar(line, shift)), line)
+        try_result(f"Caesar(+{shift}) → Atbash", atbash(caesar(line, shift)), line)
 
-    # [D] Caesar saja (jika baris sudah terlihat seperti ciphertext)
+    # [D] Caesar saja
     for shift in range(26):
-        r = caesar(line, shift)
-        if flag_re.search(r):
-            try_result(f"Caesar(ROT{shift})", r, line)
+        try_result(f"Caesar(+{shift})", caesar(line, shift), line)
 
-    # [E] Atbash → Caesar → Atbash (triple layer)
+    # [E] Triple: Atbash → Caesar → Atbash
     for shift in range(26):
-        triple = atbash(caesar(ab, shift))
-        try_result(f"Atbash→Caesar({shift})→Atbash", triple, line)
+        try_result(f"Atbash → Caesar({shift}) → Atbash", atbash(caesar(ab, shift)), line)
+
+# ── Sort: real prefix dulu, lalu skor keterbacaan tertinggi ──
+hits.sort(key=lambda x: (x[0], -x[4]))
 
 if hits:
-    print(f"  \033[0;32m[+]\033[0m {len(hits)} hit ditemukan:")
-    for method, val, src in hits:
-        print(f"  \033[0;35m[FLAG?]\033[0m \033[1m{method}\033[0m")
-        print(f"         Input  : \033[2m{src[:60]}\033[0m")
-        print(f"         Hasil  : \033[0;32m{val}\033[0m")
+    real_hits   = [h for h in hits if h[0] == 0]
+    likely_hits = [h for h in hits if h[0] == 1]
+
+    if real_hits:
+        print(f"  \033[0;32m[+]\033[0m \033[1m{len(real_hits)} FLAG CONFIRMED\033[0m (prefix resmi CTF):")
+        print()
+        for _, method, val, src, score in real_hits:
+            print(f"  \033[0;35m★ [CONFIRMED FLAG]\033[0m  \033[1m{method}\033[0m")
+            print(f"     Input  : \033[2m{src[:70]}\033[0m")
+            print(f"     \033[0;32m\033[1m✔ FLAG : {val}\033[0m")
+            print()
+    else:
+        print(f"  \033[0;33m[!]\033[0m Tidak ada prefix CTF resmi — menampilkan kandidat readable teratas:\033[0m")
+
+    if likely_hits:
+        print(f"  \033[2m[Kandidat lain — readable score ≥80%] ({len(likely_hits)} hasil):\033[0m")
+        for _, method, val, src, score in likely_hits[:5]:
+            print(f"  \033[0;36m[?]\033[0m \033[2m{method}\033[0m → {val}  \033[2m(score={score:.0%})\033[0m")
+        if len(likely_hits) > 5:
+            print(f"  \033[2m... dan {len(likely_hits)-5} kandidat lain (lihat laporan)\033[0m")
 else:
-    print("  \033[2m[-]\033[0m Tidak ada hit NIGHTFALL chain pada konten ini")
-    # Tetap tampilkan preview Atbash dari baris pertama yang ada alfabet
+    print("  \033[2m[-]\033[0m Tidak ada hasil Atbash/Caesar yang menghasilkan plaintext readable.")
+    print("  \033[2m    Kemungkinan: bukan Atbash+Caesar, coba --chain dengan cipher lain.\033[0m")
     for line in text.splitlines():
         if len(line) > 6 and any(c.isalpha() for c in line):
-            print(f"  Preview Atbash baris 1: \033[2m{atbash(line.strip())[:80]}\033[0m")
+            print(f"  Preview Atbash: \033[2m{atbash(line.strip())[:80]}\033[0m")
             break
 NIGHTFALL_PY
   else
@@ -6088,9 +6435,101 @@ print_summary() {
   echo -e "  ${W}Report  :${NC} $REPORT_FILE"
 
   echo ""
-  if [[ -f "$REPORT_FILE" ]] && grep -q "FLAG\|FOUND\|HIT" "$REPORT_FILE" 2>/dev/null; then
+
+  # ── Kumpulkan semua flag dari report file ──
+  local all_flags=()
+
+  if [[ -f "$REPORT_FILE" ]]; then
+    # 1. FLAG_CONFIRMED dari chain solver (patch di atas)
+    while IFS= read -r line; do
+      local val
+      val=$(echo "$line" | sed 's/^[^:]*://' | xargs 2>/dev/null)
+      [[ -n "$val" ]] && all_flags+=("$val")
+    done < <(grep -E "^FLAG_CONFIRMED:" "$REPORT_FILE" 2>/dev/null)
+
+    # 2. DECODE_HIT lines
+    while IFS= read -r line; do
+      local val
+      val=$(echo "$line" | sed 's/^DECODE_HIT://' | xargs 2>/dev/null)
+      [[ -n "$val" ]] && all_flags+=("$val")
+    done < <(grep "^DECODE_HIT:" "$REPORT_FILE" 2>/dev/null)
+
+    # 3. Semua baris FLAG/FOUND/HIT lama
+    while IFS= read -r line; do
+      all_flags+=("$line")
+    done < <(grep -E "(FLAG|FOUND|HIT|CONFIRMED)" "$REPORT_FILE" 2>/dev/null | \
+             grep -v "^FLAG_CONFIRMED:\|^DECODE_HIT:")
+  fi
+
+  # ── Tambahan: scan DECODE_HITS array yang baru diisi ──
+  for hit in "${DECODE_HITS[@]}"; do
+    # Ekstrak nilai flag dari format "[METHOD] value"
+    local hval
+    hval=$(echo "$hit" | sed 's/^\[[^]]*\] //')
+    # Cek apakah mengandung flag pattern
+    if echo "$hval" | grep -qE '[A-Za-z0-9_]{2,12}\{[^}]+\}'; then
+      all_flags+=("DECODE_HIT: $hit")
+    fi
+  done
+
+  # ── Deduplicate dan tampilkan ──
+  if [[ ${#all_flags[@]} -gt 0 ]]; then
     echo -e "  ${M}${BOLD}[FLAG CANDIDATES]${NC}"
-    grep -E "(FLAG|FOUND|HIT)" "$REPORT_FILE" | sed 's/^/  /' | head -10
+
+    # Pisahkan: FLAG CONFIRMED dulu, lalu sisanya
+    local shown_confirmed=false
+    local seen_vals=()
+
+    # Pass 1: tampilkan CONFIRMED
+    for entry in "${all_flags[@]}"; do
+      echo "$entry" | grep -qiE "(FLAG_CONFIRMED|CONFIRMED)" || continue
+      local fval
+      fval=$(echo "$entry" | grep -oE '[A-Za-z0-9_]{2,12}\{[^}]+\}' | head -1)
+      [[ -z "$fval" ]] && continue
+      # Dedup
+      local dup=false
+      for sv in "${seen_vals[@]}"; do [[ "$sv" == "$fval" ]] && dup=true; done
+      [[ "$dup" == true ]] && continue
+      seen_vals+=("$fval")
+      echo -e "  ${G}★ [FLAG CONFIRMED]${NC} ${BOLD}${fval}${NC}"
+      shown_confirmed=true
+    done
+
+    # Pass 2: tampilkan DECODE_HIT
+    for entry in "${all_flags[@]}"; do
+      echo "$entry" | grep -qiE "DECODE_HIT" || continue
+      local fval
+      fval=$(echo "$entry" | grep -oE '[A-Za-z0-9_]{2,12}\{[^}]+\}' | head -1)
+      [[ -z "$fval" ]] && continue
+      local dup=false
+      for sv in "${seen_vals[@]}"; do [[ "$sv" == "$fval" ]] && dup=true; done
+      [[ "$dup" == true ]] && continue
+      seen_vals+=("$fval")
+      local method
+      method=$(echo "$entry" | grep -oP '(?<=DECODE_HIT: \[)[^\]]+')
+      echo -e "  ${M}✔ [${method:-DECODED}]${NC} ${fval}"
+    done
+
+    # Pass 3: tampilkan sisanya (log lama)
+    for entry in "${all_flags[@]}"; do
+      echo "$entry" | grep -qiE "(FLAG_CONFIRMED|DECODE_HIT)" && continue
+      local fval
+      fval=$(echo "$entry" | grep -oE '[A-Za-z0-9_]{2,12}\{[^}]+\}' | head -1)
+      [[ -z "$fval" ]] && fval=$(echo "$entry" | sed 's/^[^:]*://' | xargs 2>/dev/null)
+      [[ -z "$fval" ]] && continue
+      local dup=false
+      for sv in "${seen_vals[@]}"; do [[ "$sv" == "$fval" ]] && dup=true; done
+      [[ "$dup" == true ]] && continue
+      seen_vals+=("$fval")
+      echo -e "  ${C}◆${NC} $entry" | sed 's/^/  /'
+    done
+
+    if [[ ${#seen_vals[@]} -eq 0 ]]; then
+      echo -e "  ${DIM}(Tidak ada flag eksplisit — lihat DECODE HITS di atas)${NC}"
+    fi
+  else
+    echo -e "  ${DIM}[FLAG CANDIDATES]${NC}"
+    echo -e "  ${DIM}Tidak ada flag yang terdeteksi.${NC}"
   fi
 
   echo ""
@@ -8078,6 +8517,10 @@ main() {
         read -r decode_input
         run_decode_mode "$decode_input"
       fi
+      exit 0 ;;
+    --chain)
+      # Multi-layer cipher chain: fasfo --chain "ciphertext" ["cipher1,cipher2,..."]
+      run_chain_mode "${2:-}" "${3:-}"
       exit 0 ;;
   esac
 

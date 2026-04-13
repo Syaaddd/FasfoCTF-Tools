@@ -3,22 +3,24 @@
 > **CTF Forensics Tool** — All-in-one forensics analysis suite designed for Capture The Flag competitions.
 
 <p align="center">
-  <strong>v5.0.0</strong> ·
+  <strong>v5.1.0</strong> ·
   Built for <strong>Kali Linux / Parrot OS</strong> ·
-  Bash-based CLI Tool · 14 Analysis Modules + Decode Engine + DNS Analysis Engine + Crypto Analysis + Advanced Cryptanalysis
+  Bash-based CLI Tool · 14 Analysis Modules + Decode Engine + DNS Analysis Engine + Crypto Analysis + Cipher Chain Solver
 </p>
 
 ---
 
 ## 🔍 Overview
 
-**FASFO** is a comprehensive Bash-based forensics toolkit that automates the analysis of files commonly encountered in CTF forensics challenges. It integrates multiple open-source forensics tools into a single command-line interface with **interactive menus**, **multi-file batch scanning**, a **17-type Decode Engine**, an advanced **DNS Analysis Engine** for tunneling detection, **4 Advanced Modules** for deep forensics (file carving, DFIR memory analysis, network C2 detection, statistical steganography), a **Crypto Analysis module** (RSA, AES, hash cracking, length extension, SageMath integration), **AWK/GREP/SORT log analysis**, **intelligent flag detection**, and **modular analysis pipelines**.
+**FASFO** is a comprehensive Bash-based forensics toolkit that automates the analysis of files commonly encountered in CTF forensics challenges. It integrates multiple open-source forensics tools into a single command-line interface with **interactive menus**, **multi-file batch scanning**, a **17-type Decode Engine**, an advanced **DNS Analysis Engine** for tunneling detection, **4 Advanced Modules** for deep forensics (file carving, DFIR memory analysis, network C2 detection, statistical steganography), a **Crypto Analysis module** (RSA, AES, hash cracking, length extension, SageMath integration), a **Cipher Chain Solver** for multi-layer encryption (Caesar→Atbash→flag), **AWK/GREP/SORT log analysis**, **intelligent flag detection**, and **modular analysis pipelines**.
 
 ### Key Features
 
 ✅ **14 forensics modules** — File, Stego, Network, Memory, Archive, Log, OSINT, Registry, Windows Artifacts, Crypto, + 4 Advanced modules
 ✅ **Crypto Analysis** — RSA factoring, AES/DES/ChaCha20 analysis, hash cracking (MD5/SHA/bcrypt), length extension attacks, SageMath integration
 ✅ **Advanced Cryptanalysis** — Bellcore CRT Fault Attack, NIGHTFALL Chain solver, AbsoluteCinema Math Solver, XOR Crib Dragging
+✅ **🔗 Cipher Chain Solver** — Auto-solve multi-layer encryption chains (Caesar→Atbash→flag) with DFS + prefix oracle
+✅ **Step-by-step decryption** — CTF WriteUp-style output showing each layer transformation
 ✅ **Advanced File Analysis** — Polyglot detection, XOR brute force, malware static triage, scalpel carving, entropy analysis
 ✅ **Advanced Memory/DFIR** — Hidden process detection, DLL injection, SSDT hooks, credential dumping, NTFS timeline, slack space
 ✅ **Advanced Network Forensics** — C2 beacon detection, covert channel analysis, TLS/SNI extraction, Zeek integration, ICMP exfil
@@ -208,12 +210,84 @@ fasfo --decode
 
 The decode engine tries **17 encoding types** automatically and reports all successful decodes.
 
+### Cipher Chain Solver — NEW in v5.1.0
+
+Solve **multi-layer encryption chains** automatically — the exact pattern used in CTF challenges like "Operation NIGHTFALL":
+
+```
+Plaintext → Caesar +6 → Atbash → Ciphertext
+Reverse:  Ciphertext → Atbash → Caesar -6 → Plaintext
+```
+
+```bash
+# Solve a 2-layer chain: Atbash → Caesar
+fasfo --chain-decode "RAO{ri4bb1r_r1em3c_h4ba3c}"
+
+# Increase chain depth (2-5 layers)
+fasfo --chain-decode "complex_ciphertext" 5
+
+# Custom flag prefixes (for non-standard CTF formats)
+FASFO_PREFIXES='FLAG{,HTB{' fasfo --chain-decode "XYZ{encoded_text}"
+
+# Interactive mode (prompts for input)
+fasfo --chain-decode
+
+# Full crypto analysis + auto chain solving on file content
+fasfo cipher.txt --Forensics --crypto-chain
+```
+
+#### How It Works
+
+The chain solver uses a **DFS (Depth-First Search)** algorithm with **prefix oracle** to automatically find the correct decryption path:
+
+| Feature | Description |
+|---------|-------------|
+| **Supported ciphers** | Caesar (25 shifts), Atbash, ROT13, Reverse, Base64, Hex, URL decode |
+| **Chain depth** | 2-5 layers (configurable via `FASFO_CHAIN_DEPTH`) |
+| **Prefix oracle** | Detects flag patterns: `CTF{`, `FLAG{`, `HTB{`, `picoCTF{`, `RAO{`, `LKS{`, `THM{`, etc. |
+| **Cycle detection** | Prevents infinite loops (e.g., Atbash→Atbash = identity) |
+| **Output format** | Step-by-step decryption chain like CTF writeup |
+| **Custom prefixes** | Set via `FASFO_PREFIXES='CUSTOM{'` env var |
+
+#### Example Output
+
+```
+  ==================================================
+  SOLUTION #1
+  ==================================================
+
+  Input:  RAO{ri4bb1r_r1em3c_h4ba3c}
+  Flag:   CTF{cl4ss1c_c1ph3r_m4st3r}
+  Layers: 2
+
+  Step-by-step decryption:
+    Step 1: Atbash
+      RAO{ri4bb1r_r1em3c_h4ba3c}
+      ↓ Atbash
+      IZL{ir4yy1i_i1vn3x_s4yz3x}
+    Step 2: Caesar(-6)
+      IZL{ir4yy1i_i1vn3x_s4yz3x}
+      ↓ Caesar(-6)
+      CTF{cl4ss1c_c1ph3r_m4st3r}
+
+  ✅ FLAG: CTF{cl4ss1c_c1ph3r_m4st3r}
+```
+
+#### Auto-Trigger on File Scan
+
+When using `--crypto` or `--crypto-chain`, the chain solver automatically:
+1. Extracts flag-like strings from the target file (Base64, hex, reversed flags)
+2. Runs chain solver on each candidate (up to 20 strings)
+3. Reports any decrypted flags found
+
 ### Available Options
 
 | Flag | Description |
 |------|-------------|
 | `--Forensics` | **Required for CLI mode.** Activates forensics analysis mode |
 | `--decode` | Decode string directly (base64, hex, rot13, reversed, morse, binary, XOR, atbash, l33t, etc.) |
+| `--chain-decode` | **Cipher chain solver** — auto-solve multi-layer encryption (Caesar→Atbash→flag) |
+| `--crypto-chain` | Crypto analysis + **auto chain solving** on file content |
 | `--file` | File analysis module only |
 | `--stego` | Steganography module only |
 | `--net` | Network forensics module only (PCAP + DNS analysis) |
@@ -238,6 +312,8 @@ The decode engine tries **17 encoding types** automatically and reports all succ
 | Variable | Description |
 |----------|-------------|
 | `FASFO_WORDLIST=/path/to/wordlist.txt` | Custom wordlist for archive bruteforce (default: rockyou.txt) |
+| `FASFO_CHAIN_DEPTH=N` | Max chain depth for cipher chain solver (default: 3, max: 5) |
+| `FASFO_PREFIXES='FLAG{,HTB{'` | Custom flag prefixes for chain solver oracle |
 
 ---
 
@@ -1085,6 +1161,9 @@ At the end of each scan, FASFO displays:
 | **Decode a string** | `fasfo --decode "RlRDe3R1cjBfMW5fNHJ0MTRmY3R9"` |
 | **Decode reversed flag** | `fasfo --decode "}tc4f1tr4_fn1_nur0tu4{FTC"` |
 | **Decode hex** | `fasfo --decode "4654437b6865785f666c61677d"` |
+| **Chain decode (2-layer)** | `fasfo --chain-decode "RAO{ri4bb1r_r1em3c_h4ba3c}"` |
+| **Chain decode (deep)** | `fasfo --chain-decode "complex_text" 5` |
+| **Crypto + chain solve** | `fasfo cipher.txt --Forensics --crypto-chain` |
 
 ### Tips for CTF Players
 
@@ -1123,6 +1202,11 @@ At the end of each scan, FASFO displays:
 33. **Frequency analysis** — Index of Coincidence (IC) calculation for classical cipher analysis
 34. **Weak RNG detection** — Identifies time-based seeds, hardcoded seeds, and custom crypto implementations
 35. **Nonce/IV reuse detection** — Block entropy analysis to detect encryption flaws
+36. **Cipher chain solver** — Auto-solves multi-layer encryption (Caesar→Atbash, ROT13→Base64, etc.) with `--chain-decode`
+37. **CTF WriteUp output** — Chain solver shows step-by-step decryption like a real writeup
+38. **Custom flag prefixes** — Use `FASFO_PREFIXES='FLAG{,HTB{'` for non-standard CTF formats
+39. **Deep chain solving** — Set `FASFO_CHAIN_DEPTH=5` for complex 5-layer encryption challenges
+40. **Auto chain on files** — `--crypto-chain` auto-extracts and solves chains from file content
 
 ---
 
@@ -1168,7 +1252,20 @@ export DISPLAY=:0
 
 ## 🛠️ Development
 
-### Current Version: `5.0.0`
+### Current Version: `5.1.0`
+
+**Changelog v5.1.0:**
+- 🔗 **NEW: Cipher Chain Solver (`--chain-decode`)** — Auto-solve multi-layer encryption chains using DFS + prefix oracle
+- 🔗 **NEW: `--crypto-chain` flag** — Full crypto analysis + automatic chain solving on file content
+- 🔗 **Multi-layer support** — Caesar→Atbash, Atbash→Caesar, ROT13→Base64, and any combination (2-5 layers deep)
+- 🔗 **DFS algorithm** — Efficient depth-first search with cycle detection and state pruning
+- 🔗 **Prefix oracle** — Auto-detects flag patterns: `CTF{`, `FLAG{`, `HTB{`, `picoCTF{`, `RAO{`, `LKS{`, `THM{`, etc.
+- 🔗 **Step-by-step output** — CTF WriteUp-style report showing each decryption layer
+- 🔗 **Custom prefixes** — Set via `FASFO_PREFIXES` env var for non-standard CTF formats
+- 🔗 **Configurable depth** — Set via `FASFO_CHAIN_DEPTH` env var (default: 3, max: 5)
+- 🔗 **Auto-trigger on file scan** — When `--crypto` or `--crypto-chain` is used, chain solver auto-runs on extracted candidates
+- 🔗 **Chain decode report** — Results saved to `chain_decode_YYYYMMDD_HHMMSS.txt`
+- 📝 **Total codebase** — 8600+ lines of Bash
 
 **Changelog v5.0.0:**
 - 🆕 **Crypto Analysis Module (`--crypto`)** — Comprehensive cryptography analysis for CTF crypto challenges (~1400 lines)
