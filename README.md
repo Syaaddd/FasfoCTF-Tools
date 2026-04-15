@@ -3,7 +3,7 @@
 > **CTF Forensics Tool** — All-in-one forensics analysis suite designed for Capture The Flag competitions.
 
 <p align="center">
-  <strong>v5.1.0</strong> ·
+  <strong>v5.3.0</strong> ·
   Built for <strong>Kali Linux / Parrot OS</strong> ·
   Bash-based CLI Tool · 14 Analysis Modules + Decode Engine + DNS Analysis Engine + Crypto Analysis + Cipher Chain Solver
 </p>
@@ -16,7 +16,9 @@
 
 ### Key Features
 
-✅ **14 forensics modules** — File, Stego, Network, Memory, Archive, Log, OSINT, Registry, Windows Artifacts, Crypto, + 4 Advanced modules
+✅ **15 forensics modules** — File, Stego, Network, Memory, Archive, Log, OSINT, Registry, Windows Artifacts, Crypto, Malware, + 4 Advanced modules
+✅ **🔍 Targeted Keyword Search** — Search for specific data/logs (e.g., RDP properties, passwords, usernames) across all modules
+✅ **🦠 Malware Analysis** — Track malware downloads from domains, correlate SysMon events, and scan malicious AI models (Torch/Pickle RCE)
 ✅ **Crypto Analysis** — RSA factoring, AES/DES/ChaCha20 analysis, hash cracking (MD5/SHA/bcrypt), length extension attacks, SageMath integration
 ✅ **Advanced Cryptanalysis** — Bellcore CRT Fault Attack, NIGHTFALL Chain solver, AbsoluteCinema Math Solver, XOR Crib Dragging
 ✅ **🔗 Cipher Chain Solver** — Auto-solve multi-layer encryption chains (Caesar→Atbash→flag) with DFS + prefix oracle
@@ -285,6 +287,7 @@ When using `--crypto` or `--crypto-chain`, the chain solver automatically:
 | Flag | Description |
 |------|-------------|
 | `--Forensics` | **Required for CLI mode.** Activates forensics analysis mode |
+| `--search`, `--keyword` | **Targeted Keyword Search** — search for specific data in all modules |
 | `--decode` | Decode string directly (base64, hex, rot13, reversed, morse, binary, XOR, atbash, l33t, etc.) |
 | `--chain-decode` | **Cipher chain solver** — auto-solve multi-layer encryption (Caesar→Atbash→flag) |
 | `--crypto-chain` | Crypto analysis + **auto chain solving** on file content |
@@ -297,6 +300,7 @@ When using `--crypto` or `--crypto-chain`, the chain solver automatically:
 | `--log` | Log analysis module only |
 | `--registry` | Registry analysis module only (SAM/SYSTEM/NTUSER/SOFTWARE/SECURITY/memory) |
 | `--windows` | Windows artifact module only (LNK/Prefetch/EVTX) |
+| `--malware` | Malware analysis module (Dropper tracker + AI scanner) |
 | `--adv-file` | Advanced file analysis (polyglot, XOR, malware triage, scalpel) |
 | `--adv-mem` | Advanced memory/DFIR (hidden proc, DLL injection, SSDT, timeline) |
 | `--adv-net` | Advanced network forensics (C2 detection, covert channels, Zeek) |
@@ -813,7 +817,27 @@ Analyzes Windows forensic artifact files commonly found in CTF challenges.
 
 ---
 
-### 10. 🔐 Crypto Analysis (`--crypto`) — NEW in v5.0.0
+### 11. 🦠 Malware Analysis (`--malware`) — NEW in v5.3.0
+
+Specialized module for tracking malware infections, download sources, and malicious AI models. Designed to solve complex breach scenarios.
+
+#### Malware Dropper & Download Tracker
+- **Download Correlation** — Automatically extracts URLs/domains and maps them to filenames found in logs or strings.
+- **SysMon Integration** — Analyzes Event ID 3 (Network Connection) and Event ID 11 (File Creation) to track how malware entered the system.
+- **Dropped File Hunting** — Scans for suspicious extensions (`.exe`, `.dll`, `.bat`, `.ps1`, `.bin`) and correlates them with download domains.
+- **LKS Flag Helper** — Automatically generates flag candidates based on the `LKS{orig_saved}` pattern common in forensics challenges.
+
+#### AI Malware & Malicious Model Scanner
+- **Torch/Pickle RCE Detection** — Scans PyTorch models (`.pth`, `.pt`) and Pickle files (`.pkl`) for arbitrary code execution opcodes (`REDUCE`, `GLOBAL`).
+- **Dangerous Import Analysis** — Flags models that attempt to import `os.system`, `subprocess`, `builtins.eval`, etc.
+- **Embedded Shellcode Scan** — Detects hex patterns commonly used in shellcode-droppers hidden within AI weights.
+
+**Example Scenario:**
+If a malware `malicious.bin` was downloaded from `attacker.com` and saved as `system32.exe`, FASFO will attempt to correlate these and suggest the flag: `LKS{malicioussystem32}`.
+
+---
+
+### 12. 🔐 Crypto Analysis (`--crypto`)
 
 Comprehensive cryptography analysis for CTF crypto challenges. Supports RSA, AES, DES, ChaCha20, hash cracking, length extension attacks, classical cipher auto-solving, and advanced mathematical cryptanalysis via inline Python3.
 
@@ -990,6 +1014,28 @@ All decode hits are saved to the report file as `DECODE_HIT:` entries.
 
 ---
 
+### 🔍 Targeted Keyword Search — NEW in v5.2.0
+
+Search for specific data or logs across all modules. This is particularly useful for challenges where you need to find a specific property, password, or username.
+
+```bash
+# Search for specific keywords during scan
+fasfo artifact.evtx --Forensics --search "drivestoredirect"
+fasfo auth.log --Forensics --keyword "admin,password,LKS"
+```
+
+In **Interactive Mode**, you will be prompted to enter target keywords before the scan begins.
+
+| Feature | Description |
+|---------|-------------|
+| **Multi-keyword** | Supports comma-separated keywords (e.g., `word1,word2`) |
+| **String search** | Automatically searches via `strings` in binary files |
+| **Content search** | Greps through text/log files |
+| **Metadata search** | Searches through `exiftool` metadata output |
+| **Report logging** | All matches are saved to the report file |
+
+---
+
 ## 🎯 Interactive Menu System — NEW in v1.6.0
 
 FASFO v1.6.0+ introduces a **full interactive menu system** — no need to memorize CLI flags.
@@ -1131,6 +1177,7 @@ At the end of each scan, FASFO displays:
 
 | Challenge Type | Command |
 |----------------|---------|
+| **Targeted keyword search** | `fasfo logs.evtx --Forensics --search "drivestoredirect"` |
 | **Mystery file** | `fasfo unknown_file --Forensics` |
 | **PNG steganography** | `fasfo challenge.png --Forensics --stego` |
 | **JPEG with hidden data** | `fasfo photo.jpg --Forensics --stego` |
@@ -1149,6 +1196,8 @@ At the end of each scan, FASFO displays:
 | **LNK shortcut analysis** | `fasfo shortcut.lnk --Forensics --windows` |
 | **Prefetch file analysis** | `fasfo CMD.EXE-ABC123.pf --Forensics --windows` |
 | **Event Log analysis** | `fasfo Security.evtx --Forensics --windows` |
+| **Malware infection/dropper** | `fasfo Sysmon.evtx --Forensics --malware` |
+| **Malicious AI model** | `fasfo model.pth --Forensics --malware` |
 | **Advanced file (polyglot/XOR)** | `fasfo suspicious.exe --Forensics --adv-file` |
 | **Advanced memory DFIR** | `fasfo memdump.raw --Forensics --adv-mem` |
 | **Advanced network (C2)** | `fasfo traffic.pcap --Forensics --adv-net` |
@@ -1252,20 +1301,22 @@ export DISPLAY=:0
 
 ## 🛠️ Development
 
-### Current Version: `5.1.0`
+### Current Version: `5.3.0`
 
-**Changelog v5.1.0:**
-- 🔗 **NEW: Cipher Chain Solver (`--chain-decode`)** — Auto-solve multi-layer encryption chains using DFS + prefix oracle
-- 🔗 **NEW: `--crypto-chain` flag** — Full crypto analysis + automatic chain solving on file content
-- 🔗 **Multi-layer support** — Caesar→Atbash, Atbash→Caesar, ROT13→Base64, and any combination (2-5 layers deep)
-- 🔗 **DFS algorithm** — Efficient depth-first search with cycle detection and state pruning
-- 🔗 **Prefix oracle** — Auto-detects flag patterns: `CTF{`, `FLAG{`, `HTB{`, `picoCTF{`, `RAO{`, `LKS{`, `THM{`, etc.
-- 🔗 **Step-by-step output** — CTF WriteUp-style report showing each decryption layer
-- 🔗 **Custom prefixes** — Set via `FASFO_PREFIXES` env var for non-standard CTF formats
-- 🔗 **Configurable depth** — Set via `FASFO_CHAIN_DEPTH` env var (default: 3, max: 5)
-- 🔗 **Auto-trigger on file scan** — When `--crypto` or `--crypto-chain` is used, chain solver auto-runs on extracted candidates
-- 🔗 **Chain decode report** — Results saved to `chain_decode_YYYYMMDD_HHMMSS.txt`
-- 📝 **Total codebase** — 8600+ lines of Bash
+**Changelog v5.3.0:**
+- 🦠 **NEW: Malware Analysis Module (`--malware`)** — Specialized tools for tracking infections and dropper chains
+- 🦠 **Malware Dropper Tracker** — Automatically correlates download domains with local filenames and SysMon events (ID 3 & 11)
+- 🦠 **AI/Torch Model Scanner** — Scans PyTorch (`.pth`, `.pt`) and Pickle (`.pkl`) models for RCE opcodes and dangerous imports
+- 🦠 **LKS Flag Helper** — Correlation engine to solve `LKS{orig_saved}` flag formats common in forensics challenges
+- 📝 **Total codebase** — 8800+ lines of Bash
+
+**Changelog v5.2.0:**
+- 🔍 **NEW: Targeted Keyword Search** — Search for specific data/logs (e.g., RDP property `drivestoredirect`) across all modules
+- 🔍 **Interactive & CLI** — Prompt for keywords in interactive mode or use `--search="keyword"` flag
+- 🔍 **Summary Integration** — Search results are now part of the final FASFO SCAN SUMMARY box
+- 🔍 **Keyword Highlighting** — Matched keywords are highlighted in **red** for better visibility
+- 🔍 **Multi-source** — Searches in strings, file content, metadata, and registry exports
+- 📝 **Total codebase** — 8700+ lines of Bash
 
 **Changelog v5.0.0:**
 - 🆕 **Crypto Analysis Module (`--crypto`)** — Comprehensive cryptography analysis for CTF crypto challenges (~1400 lines)

@@ -5,13 +5,23 @@
 #  CTF Edition | Kali Linux / Parrot OS
 # ============================================================
 
-VERSION="5.0.0"
+VERSION="5.3.0"
 FASFO_DIR="$HOME/.fasfo"
 REPORT_DIR="$FASFO_DIR/reports"
 mkdir -p "$REPORT_DIR"
 
+# Flag filter (set via --flag-filter or FASFO_FLAG_FILTER env var)
+# Format: comma-separated prefixes, e.g., 'CTF{,FLAG{,HTB{'
+FLAG_FILTER="${FASFO_FLAG_FILTER:-}"
+
+# Flag untuk skip mechanism (Ctrl+C)
+SKIP_CURRENT_TOOL=false
+
 # Folder sesi aktif (diset oleh _prompt_session_folder)
 SESSION_REPORT_DIR=""
+
+# Keyword pencarian bertarget (diset oleh _prompt_target_search)
+TARGET_KEYWORDS=""
 
 # ─────────────────────────────────────────
 #  HELPER — kembalikan dir output aktif
@@ -23,6 +33,26 @@ _active_report_dir() {
   else
     echo "$REPORT_DIR"
   fi
+}
+
+_prompt_target_search() {
+  echo -e "  ${BOLD}${C}┌─────────────────────────────────────────────────┐${NC}"
+  echo -e "  ${BOLD}${C}│${NC}  ${W}🔍 Targeted Keyword Search (Opsional)${NC}          ${BOLD}${C}│${NC}"
+  echo -e "  ${BOLD}${C}│${NC}  ${DIM}Cari keyword spesifik di log/artifact (cth: RDP)${NC}  ${BOLD}${C}│${NC}"
+  echo -e "  ${BOLD}${C}│${NC}  ${DIM}Contoh: drivestoredirect, password, admin${NC}       ${BOLD}${C}│${NC}"
+  echo -e "  ${BOLD}${C}│${NC}  ${DIM}[Enter] = lewati pencarian bertarget${NC}            ${BOLD}${C}│${NC}"
+  echo -e "  ${BOLD}${C}└─────────────────────────────────────────────────┘${NC}"
+  printf "  ${Y}▶${NC} Keyword target: "
+  read -r keywords_input
+
+  if [[ -n "$keywords_input" ]]; then
+    TARGET_KEYWORDS="$keywords_input"
+    echo -e "  ${G}[✔]${NC} Keyword target aktif: ${W}$TARGET_KEYWORDS${NC}"
+    echo -e "  ${DIM}  (Pencarian akan dilakukan pada setiap modul yang relevan)${NC}"
+  else
+    echo -e "  ${DIM}  (Pencarian bertarget dilewati)${NC}"
+  fi
+  echo ""
 }
 
 # ─────────────────────────────────────────
@@ -96,21 +126,84 @@ NC='\033[0m'     # reset
 # Array global untuk menampung semua hasil decode
 DECODE_HITS=()
 
+# Array global untuk menampung SEMUA hasil decode (termasuk garbled/random)
+ALL_DECODE_RESULTS=()
+
+# Array global untuk tracking FLAG → METHODS/TOOLS yang digunakan (untuk writeup)
+FLAG_TOOLS_MAP=()
+
 # ── Helper: cetak hasil decode ────────────
 _decode_hit() {
   local method="$1"
   local original="$2"
   local decoded="$3"
-  # simpan ke array global
+  # simpan ke array global (flag candidates)
   DECODE_HITS+=("[$method] $decoded")
+  # SELALU simpan ke ALL_DECODE_RESULTS (termasuk yang garbled)
+  ALL_DECODE_RESULTS+=("[$method] $original → $decoded")
+
+  # EKSTRAK FLAG dan track tools/method yang digunakan
+  local extracted_flag
+  extracted_flag=$(_extract_flag "$decoded" 2>/dev/null || echo "")
+  if [[ -z "$extracted_flag" ]]; then
+    extracted_flag=$(_extract_flag "$original" 2>/dev/null || echo "")
+  fi
+  if [[ -n "$extracted_flag" ]]; then
+    FLAG_TOOLS_MAP+=("$extracted_flag|[$method] $original")
+    log_report "FLAG_TOOLS: $extracted_flag → [$method]"
+  fi
+
   echo -e "  ${M}[DECODE]${NC} ${BOLD}${method}${NC}: ${DIM}${original:0:40}${NC} → ${G}${BOLD}${decoded}${NC}"
   log_report "DECODED[$method]: $decoded"
+}
+
+# ── Helper: simpan decode result yang tidak flag candidate ──
+_decode_result() {
+  local method="$1"
+  local original="$2"
+  local decoded="$3"
+  # simpan ke ALL_DECODE_RESULTS (untuk ditampilkan di summary)
+  ALL_DECODE_RESULTS+=("[$method] $original → $decoded")
+  log_report "DECODE_RESULT[$method]: $decoded"
 }
 
 # ── Cek apakah hasil decode terlihat seperti flag ─────
 _looks_like_flag() {
   local s="$1"
-  echo "$s" | grep -qiE '^[A-Za-z0-9_!@#$%^&*=-]{3,}\{[^}]+\}$|^\{[A-Za-z0-9_!@#$%^&*=-]+\}$'
+  # Format 1: string yang PERSIS flag (CTF{...})
+  echo "$s" | grep -qiE '^[A-Za-z0-9_!@#$%^&*=-]{3,}\{[^}]+\}$|^\{[A-Za-z0-9_!@#$%^&*=-]+\}$' && return 0
+  # Format 2: flag yang EMBEDDED di dalam text lebih panjang (misal: "Congratulations! Flag: ADB{...}")
+  echo "$s" | grep -qiE '[A-Za-z0-9_!@#$%^&*=-]{2,12}\{[^}]+\}' && return 0
+  return 1
+}
+
+# ── Ekstrak flag dari text yang lebih panjang ──
+_extract_flag() {
+  local s="$1"
+  # Coba ekstrak flag pattern dari text
+  echo "$s" | grep -oE '[A-Za-z0-9_!@#$%^&*=-]{2,12}\{[^}]+\}' | head -1
+}
+
+# ── Cek apakah flag matches the filter ──
+_flag_matches_filter() {
+  local flag="$1"
+  local filter="$FLAG_FILTER"
+  
+  # Jika filter kosong, semua flag match (default behavior)
+  [[ -z "$filter" ]] && return 0
+  
+  # Split filter dengan koma dan cek apakah flag mengandung salah satu prefix
+  local IFS=','
+  local -a prefixes
+  read -ra prefixes <<< "$filter"
+  for prefix in "${prefixes[@]}"; do
+    prefix=$(echo "$prefix" | xargs)  # trim whitespace
+    [[ -z "$prefix" ]] && continue
+    # Cek apakah flag mengandung prefix (case-insensitive)
+    echo "$flag" | grep -qiF "$prefix" && return 0
+  done
+  
+  return 1
 }
 
 # ── Cek apakah string printable (hasil decode valid) ──
@@ -131,6 +224,23 @@ decode_string() {
 
   [[ "$silent" != "true" ]] && \
     echo -e "\n  ${C}[*]${NC} ${BOLD}Mencoba decode:${NC} ${DIM}${raw:0:80}${NC}"
+
+  # ── 0. CEK APAKAH INPUT SUDAH MENGANDUNG FLAG ──
+  # Jika input sudah mengandung flag, simpan langsung (misal: "Congratulations! Flag: ADB{...}")
+  if _looks_like_flag "$raw"; then
+    local extracted_flag
+    extracted_flag=$(_extract_flag "$raw")
+    if [[ -n "$extracted_flag" ]]; then
+      _decode_hit "PLAINTEXT_FLAG" "Detected in input" "$extracted_flag"
+      found_any=true
+      log_report "FLAG_IN_PLAINTEXT: $extracted_flag"
+    else
+      # Fallback: simpan seluruh string jika tidak bisa ekstrak flag pattern
+      _decode_hit "ORIGINAL_INPUT" "Contains potential flag" "$raw"
+      found_any=true
+      log_report "FLAG_IN_PLAINTEXT: $raw"
+    fi
+  fi
 
   # ── 1. REVERSED (balik string) ──────────────────
   local rev
@@ -546,6 +656,17 @@ CHAIN_TRY_PY
     for hit in "${DECODE_HITS[@]}"; do
       echo -e "    ${G}✔${NC} $hit"
       log_report "DECODE_HIT: $hit"
+    done
+  fi
+
+  # Tampilkan SEMUA hasil decode (termasuk yang garbled/random) di akhir
+  if [[ ${#ALL_DECODE_RESULTS[@]} -gt 0 ]]; then
+    divider
+    echo -e "  ${Y}${BOLD}[ALL DECODE RESULTS — Termasuk yang tidak flag]${NC}"
+    echo -e "  ${DIM}(Semua hasil decode akan dikirim di summary akhir)${NC}"
+    for result in "${ALL_DECODE_RESULTS[@]}"; do
+      echo -e "    ${C}◆${NC} $result"
+      log_report "ALL_DECODE_RESULT: $result"
     done
   fi
 }
@@ -1079,12 +1200,283 @@ check_deps() {
     warn "RsaCtfTool ${DIM}(opsional — pip3 install requests && git clone https://github.com/RsaCtfTool/RsaCtfTool)${NC}"
   fi
 
-  # Summary
-  if [[ ${#miss_apt[@]} -gt 0 ]]; then
-    echo ""
-    echo -e "  ${Y}Install apt tools yang kurang:${NC}"
-    echo -e "  ${DIM}sudo apt install ${miss_apt[*]}${NC}"
+  # ── Binary Exploitation Tools (Pwn) ─────────────────────────
+  divider
+  echo -e "  ${BOLD}${W}Binary Exploitation Tools (Pwn):${NC}"
+
+  # checksec
+  if command -v checksec &>/dev/null; then
+    ok "checksec ${DIM}(binary protection analysis - PIE/CANARY/NX/RELRO)${NC}"
+  else
+    warn "checksec ${DIM}(opsional — pip3 install checksec atau sudo apt install checksec)${NC}"
+    echo -e "    ${DIM}Fix: pip3 install checksec${NC}"
   fi
+
+  # ROPgadget
+  if command -v ROPgadget &>/dev/null; then
+    ok "ROPgadget ${DIM}(ROP gadget finder)${NC}"
+  else
+    warn "ROPgadget ${DIM}(opsional — pip3 install ropgadget)${NC}"
+    echo -e "    ${DIM}Fix: pip3 install ropgadget${NC}"
+  fi
+
+  # ropper (alternative to ROPgadget)
+  if command -v ropper &>/dev/null; then
+    ok "ropper ${DIM}(ROP gadget finder - alternative)${NC}"
+  else
+    warn "ropper ${DIM}(opsional — pip3 install ropper)${NC}"
+  fi
+
+  # ── Web Exploitation Tools ─────────────────────────────────
+  divider
+  echo -e "  ${BOLD}${W}Web Exploitation Tools:${NC}"
+
+  # curl (required)
+  if has curl; then ok "curl ${DIM}(HTTP requests)${NC}"
+  else warn "curl ${DIM}(REQUIRED — sudo apt install curl)${NC}"; miss_apt+=("curl"); fi
+
+  # whatweb
+  if has whatweb; then ok "whatweb ${DIM}(technology stack detection)${NC}"
+  else warn "whatweb ${DIM}(sudo apt install whatweb)${NC}"; fi
+
+  # nikto
+  if has nikto; then ok "nikto ${DIM}(web vulnerability scanner)${NC}"
+  else warn "nikto ${DIM}(opsional — sudo apt install nikto)${NC}"; fi
+
+  # sqlmap
+  if has sqlmap; then ok "sqlmap ${DIM}(SQL injection testing)${NC}"
+  else warn "sqlmap ${DIM}(opsional — sudo apt install sqlmap)${NC}"; fi
+
+  # nmap
+  if has nmap; then ok "nmap ${DIM}(port/service detection)${NC}"
+  else warn "nmap ${DIM}(opsional — sudo apt install nmap)${NC}"; fi
+
+  # gobuster
+  if has gobuster; then ok "gobuster ${DIM}(directory brute force)${NC}"
+  else warn "gobuster ${DIM}(opsional — sudo apt install gobuster)${NC}"; fi
+
+  # dirb (alternative to gobuster)
+  if has dirb; then ok "dirb ${DIM}(directory brute force - alternative)${NC}"
+  else warn "dirb ${DIM}(opsional — sudo apt install dirb)${NC}"; fi
+
+  # jq (JSON parsing)
+  if has jq; then ok "jq ${DIM}(JSON parsing)${NC}"
+  else warn "jq ${DIM}(opsional — sudo apt install jq)${NC}"; fi
+
+  # Python requests library
+  if python3 -c "import requests" &>/dev/null 2>&1; then
+    ok "python3-requests ${DIM}(Python HTTP library)${NC}"
+  else
+    warn "python3-requests ${DIM}(pip3 install requests — untuk advanced web testing)${NC}"
+    echo -e "    ${DIM}Fix: pip3 install requests beautifulsoup4${NC}"
+  fi
+
+  # BeautifulSoup
+  if python3 -c "from bs4 import BeautifulSoup" &>/dev/null 2>&1; then
+    ok "beautifulsoup4 ${DIM}(HTML parsing)${NC}"
+  else
+    warn "beautifulsoup4 ${DIM}(pip3 install beautifulsoup4 — untuk HTML parsing)${NC}"
+  fi
+
+  # Summary
+  divider
+  if [[ ${#miss_apt[@]} -gt 0 ]]; then
+    echo -e "  ${BOLD}${W}Install missing tools:${NC}"
+    local unique_miss=($(printf '%s\n' "${miss_apt[@]}" | sort -u))
+    echo -e "  ${DIM}sudo apt install ${unique_miss[*]}${NC}"
+    echo ""
+  fi
+
+  # one_gadget
+  if command -v one_gadget &>/dev/null; then
+    ok "one_gadget ${DIM}(one-gadget RCE finder for libc)${NC}"
+  else
+    warn "one_gadget ${DIM}(opsional — gem install one_gadget)${NC}"
+    echo -e "    ${DIM}Fix: gem install one_gadget${NC}"
+  fi
+
+  # radare2
+  if command -v r2 &>/dev/null || command -v radare2 &>/dev/null; then
+    ok "radare2 ${DIM}(advanced reverse engineering)${NC}"
+  else
+    warn "radare2 ${DIM}(opsional — sudo apt install radare2)${NC}"
+  fi
+
+  # gdb
+  if command -v gdb &>/dev/null; then
+    ok "gdb ${DIM}(GNU debugger - runtime analysis)${NC}"
+  else
+    warn "gdb ${DIM}(opsional — sudo apt install gdb)${NC}"
+  fi
+
+  # pwntools (Python)
+  if python3 -c "from pwn import *" &>/dev/null 2>&1; then
+    ok "pwntools ${DIM}(Python exploitation framework - ROP/shellcode/exploit dev)${NC}"
+  else
+    warn "pwntools ${DIM}(opsional — pip3 install pwntools, sangat direkomendasikan untuk CTF)${NC}"
+    echo -e "    ${DIM}Fix: pip3 install pwntools${NC}"
+  fi
+}
+
+# ─────────────────────────────────────────
+#  TARGETED SEARCH MODULE — SEARCH BY KEYWORD
+# ─────────────────────────────────────────
+mod_targeted_search() {
+  local target="$1"
+  [[ -z "$TARGET_KEYWORDS" ]] && return
+
+  echo -e "\n  ${BOLD}${R}┌─────────────────────────────────────────────────┐${NC}"
+  echo -e "  ${BOLD}${R}│${NC}  ${W}🔍 Targeted Keyword Search Results${NC}             ${BOLD}${R}│${NC}"
+  echo -e "  ${BOLD}${R}└─────────────────────────────────────────────────┘${NC}"
+  echo -e "  ${C}[*]${NC} Keyword: ${BOLD}${R}${TARGET_KEYWORDS}${NC}"
+  divider
+
+  # Pecah keyword jika dipisahkan koma
+  IFS=',' read -ra kws <<< "$TARGET_KEYWORDS"
+  for kw in "${kws[@]}"; do
+    kw=$(echo "$kw" | xargs) # trim
+    [[ -z "$kw" ]] && continue
+
+    info "Hasil untuk: ${W}$kw${NC}"
+    
+    # Fungsi helper untuk mewarnai keyword di output (merah bold)
+    _highlight_kw() {
+      # Escape special characters for sed
+      local escaped_kw=$(echo "$1" | sed 's/[^^$*.[\]/]/\\&/g')
+      # Gunakan warna merah (R) dan bold, pastikan reset (NC) setelahnya
+      # Kita pakai varian sed yang support case-insensitive jika memungkinkan
+      sed "s/$escaped_kw/${R}${BOLD}&${NC}/gI"
+    }
+
+    # 1. Cari di strings (case-insensitive)
+    local strings_res
+    strings_res=$(strings "$target" 2>/dev/null | grep -iC 2 "$kw" | head -20)
+    if [[ -n "$strings_res" ]]; then
+      ok "Ditemukan di strings:"
+      echo "$strings_res" | _highlight_kw "$kw" | sed 's/^/      /'
+      log_report "TARGET_SEARCH_STRINGS[$kw]: $strings_res"
+    fi
+
+    # 2. Jika file teks/log, cari langsung
+    if file "$target" | grep -qiE "text|ascii|log"; then
+      local grep_res
+      grep_res=$(grep -iC 2 "$kw" "$target" 2>/dev/null | head -20)
+      if [[ -n "$grep_res" ]]; then
+        ok "Ditemukan di konten file:"
+        echo "$grep_res" | _highlight_kw "$kw" | sed 's/^/      /'
+        log_report "TARGET_SEARCH_FILE[$kw]: $grep_res"
+      fi
+    fi
+
+    # 3. Cari di metadata
+    if has exiftool; then
+      local meta_res
+      meta_res=$(exiftool "$target" 2>/dev/null | grep -i "$kw" | head -10)
+      if [[ -n "$meta_res" ]]; then
+        ok "Ditemukan di metadata:"
+        echo "$meta_res" | _highlight_kw "$kw" | sed 's/^/      /'
+        log_report "TARGET_SEARCH_META[$kw]: $meta_res"
+      fi
+    fi
+
+    # 4. Cari di registry (jika reg file)
+    if [[ "$target" == *.reg ]]; then
+      local reg_res
+      reg_res=$(grep -i "$kw" "$target" 2>/dev/null | head -10)
+      if [[ -n "$reg_res" ]]; then
+        ok "Ditemukan di registry export:"
+        echo "$reg_res" | _highlight_kw "$kw" | sed 's/^/      /'
+        log_report "TARGET_SEARCH_REG[$kw]: $reg_res"
+      fi
+    fi
+  done
+  echo ""
+}
+
+# ─────────────────────────────────────────
+#  MALWARE DROPPER & DOWNLOAD TRACKER
+# ─────────────────────────────────────────
+mod_malware_dropper_tracker() {
+  local target="$1"
+  section "Malware Dropper & Download Tracker"
+  info "Mencari jejak download dan file dropping..."
+  divider
+
+  # 1. Ekstrak Domain & URL
+  info "[1] Mencari Domain & URL (Potensi C2/Download Source)"
+  local urls
+  urls=$(grep -oiE 'https?://[a-zA-Z0-9./_?=&%+-]+' "$target" 2>/dev/null | sort -u)
+  if [[ -n "$urls" ]]; then
+    ok "Daftar URL ditemukan:"
+    echo "$urls" | head -15 | sed 's/^/      /'
+    log_report "DROPPER_URLS: $urls"
+  fi
+
+  # 2. Korelasi SysMon (jika input adalah log)
+  if grep -qiE "Sysmon|EventID" "$target" 2>/dev/null || [[ "$target" == *.evtx ]]; then
+    info "[2] Analisis Log SysMon (Event ID 3 & 11)"
+    
+    # Event ID 3: Network Connection
+    local net_conn
+    net_conn=$(grep -iC 5 "EventID>3<" "$target" 2>/dev/null | grep -iE "DestinationHostname|DestinationIp|Image" | head -20)
+    if [[ -n "$net_conn" ]]; then
+      found "Koneksi Network (Event ID 3) terdeteksi:"
+      echo "$net_conn" | sed 's/^/      /'
+      log_report "SYSMON_NET_CONN: $net_conn"
+    fi
+
+    # Event ID 11: FileCreate
+    local file_create
+    file_create=$(grep -iC 5 "EventID>11<" "$target" 2>/dev/null | grep -iE "TargetFilename|Image" | head -20)
+    if [[ -n "$file_create" ]]; then
+      found "Pembuatan File (Event ID 11) terdeteksi:"
+      echo "$file_create" | sed 's/^/      /'
+      log_report "SYSMON_FILE_CREATE: $file_create"
+    fi
+  fi
+
+  # 3. Mencari Filename Dropped (exe, dll, bat, ps1, bin)
+  info "[3] Mencari Filename Mencurigakan (Dropped Files)"
+  local dropped
+  dropped=$(strings "$target" 2>/dev/null | grep -iE '\.exe$|\.dll$|\.bat$|\.ps1$|\.bin$|\.sh$|\.tmp$' | grep -vE '^[A-Z]:\\Windows' | sort -u | head -20)
+  if [[ -n "$dropped" ]]; then
+    ok "Filename mencurigakan ditemukan:"
+    echo "$dropped" | sed 's/^/      /'
+    log_report "SUSPICIOUS_FILENAMES: $dropped"
+  fi
+
+  # 4. Korelasi Domain -> Filename (Flag Helper)
+  divider
+  info "[4] Korelasi Domain vs Filename (LKS Flag Helper)"
+  echo -e "  ${DIM}Mencoba menghubungkan domain download dengan file di disk...${NC}"
+  
+  # Ambil unik domain dari URL
+  local domains
+  domains=$(echo "$urls" | awk -F[/:] '{print $4}' | sort -u)
+  
+  for dom in $domains; do
+    # Cari file yang di-download dari domain ini (biasanya di URL ada filename)
+    local orig_file
+    orig_part=$(echo "$urls" | grep "$dom" | awk -F/ '{print $NF}' | cut -d? -f1 | cut -d# -f1 | grep -v "^$" | head -1)
+    
+    if [[ -n "$orig_part" ]]; then
+      local orig_no_ext="${orig_part%.*}"
+      found "Download dari domain: ${BOLD}${dom}${NC}"
+      ok "Original filename : ${W}${orig_part}${NC} (tanpa ekstensi: ${G}${orig_no_ext}${NC})"
+      
+      # Cari kemunculan filename ini di dekat file creation event atau path lain
+      local saved_file
+      saved_file=$(echo "$dropped" | grep -iE "$(echo $orig_no_ext | cut -c1-4)" | head -1)
+      if [[ -n "$saved_file" ]]; then
+        local saved_no_ext="${saved_file%.*}"
+        found "Kemungkinan disimpan sebagai: ${W}${saved_file}${NC}"
+        found "FLAG CANDIDATE: ${M}LKS{${orig_no_ext}${saved_no_ext}}${NC}"
+        log_report "DROPPER_FLAG_CANDIDATE: LKS{${orig_no_ext}${saved_no_ext}}"
+        FLAG_TOOLS_MAP+=("LKS{${orig_no_ext}${saved_no_ext}}|[DROPPER_KORELASI] Domain: $dom")
+      fi
+    fi
+  done
+  echo ""
 }
 
 # ─────────────────────────────────────────
@@ -1267,7 +1659,16 @@ mod_steganography() {
       ss_seed_file="/tmp/fasfo_stegseek_seed_$(basename "$target").out"
       info "Menjalankan stegseek --seed untuk mendeteksi embedding pattern..."
       info "${DIM}Mode ini bisa menemukan file tersembunyi meski tanpa enkripsi${NC}"
-      ss_seed_out=$($STEGSEEK_CMD --seed "$target" "$ss_seed_file" 2>&1)
+      
+      # Jalankan dengan skip support
+      _run_with_skip "stegseek --seed" $STEGSEEK_CMD --seed "$target" "$ss_seed_file" 2>&1
+      ss_seed_out=$(cat "$ss_seed_file" 2>/dev/null || echo "")
+      
+      if [[ "$SKIP_CURRENT_TOOL" == true ]]; then
+        rm -f "$ss_seed_file"
+        return
+      fi
+      
       echo "$ss_seed_out" | sed 's/^/    /'
       # Cek apakah berhasil menemukan sesuatu
       local ss_orig_name
@@ -1308,8 +1709,16 @@ mod_steganography() {
         ss_crack_file="/tmp/fasfo_stegseek_crack_$(basename "$target").out"
         info "Menjalankan stegseek --crack dengan wordlist: ${DIM}$WORDLIST${NC}"
         info "${Y}[!]${NC} StegSeek jauh lebih cepat dari stegcrack — rockyou.txt ~1-2 menit"
-        # Jalankan stegseek crack, tangkap output
-        ss_crack_out=$($STEGSEEK_CMD --crack "$target" "$WORDLIST" "$ss_crack_file" 2>&1)
+        
+        # Jalankan dengan skip support
+        _run_with_skip "stegseek --crack" $STEGSEEK_CMD --crack "$target" "$WORDLIST" "$ss_crack_file" 2>&1
+        ss_crack_out=$(cat "$ss_crack_file" 2>/dev/null || echo "")
+        
+        if [[ "$SKIP_CURRENT_TOOL" == true ]]; then
+          rm -f "$ss_crack_file"
+          return
+        fi
+        
         echo "$ss_crack_out" | sed 's/^/    /'
         # Parse passphrase dari output stegseek
         ss_passphrase=$(echo "$ss_crack_out" | grep -oP '(?<=Found passphrase: ")[^"]+|(?<=Found passphrase: )\S+' | head -1)
@@ -1997,6 +2406,68 @@ mod_memory_forensics() {
   mem_flag=$(strings "$target" 2>/dev/null | grep -iE '(flag|CTF|picoCTF|HTB|THM)\{[^}]+\}' | head -5)
   [[ -n "$mem_flag" ]] && found "Flag ditemukan via strings: $mem_flag"
   log_report "MEM_FLAG: $mem_flag"
+}
+
+# ─────────────────────────────────────────
+#  AI MALWARE & MALICIOUS MODEL SCANNER
+# ─────────────────────────────────────────
+mod_ai_malware_analysis() {
+  local target="$1"
+  section "AI Malware & Malicious Model Scanner"
+  info "Mencari model AI (Torch/Pickle) yang berbahaya..."
+  divider
+
+  local ext="${target##*.}"
+  local ftype
+  ftype=$(file --brief "$target" 2>/dev/null | tr '[:upper:]' '[:lower:]')
+
+  # Deteksi PyTorch / Pickle
+  if [[ "$ext" =~ ^(pth|pt|pkl|bin)$ ]] || [[ "$ftype" == *"pickle"* || "$ftype" == *"zip"* ]]; then
+    found "File model AI terdeteksi: ${W}$target${NC}"
+    
+    # [1] Cek Pickle Opcode berbahaya
+    info "[1] Mencari Pickle RCE Opcodes (GLOBAL, REDUCE, INST, OBJ)"
+    local rce_opcodes
+    rce_opcodes=$(strings "$target" 2>/dev/null | grep -E 'posix|nt|os|subprocess|eval|exec|builtins|getattr|__builtin__' | head -15)
+    if [[ -n "$rce_opcodes" ]]; then
+      found "Potensi RCE Opcodes ditemukan di model:"
+      echo "$rce_opcodes" | sed 's/^/      /'
+      log_report "AI_MODEL_RCE_HINT: $rce_opcodes"
+    fi
+
+    # [2] Cek Dangerous Imports
+    info "[2] Mencari Import Berbahaya (os.system, subprocess, etc.)"
+    local dangerous_imports
+    dangerous_imports=$(strings "$target" 2>/dev/null | grep -iE 'system|popen|spawn|run|call|check_output|eval|exec|compile|request|urlretrieve' | head -15)
+    if [[ -n "$dangerous_imports" ]]; then
+      found "Import/Function berbahaya ditemukan:"
+      echo "$dangerous_imports" | sed 's/^/      /'
+      log_report "AI_MODEL_DANGEROUS_IMPORTS: $dangerous_imports"
+    fi
+
+    # [3] Cek Shellcode/Hex pattern
+    info "[3] Mencari Embedded Shellcode / Hex Patterns"
+    local shellcode_hex
+    shellcode_hex=$(xxd -p "$target" 2>/dev/null | tr -d '\n' | grep -oE 'ebfe|90909090|ccccccc' | head -5)
+    if [[ -n "$shellcode_hex" ]]; then
+      found "Hex pattern mirip shellcode ditemukan: ${R}$shellcode_hex${NC}"
+      log_report "AI_MODEL_SHELLCODE: $shellcode_hex"
+    fi
+
+    # [4] Flag scan
+    local ai_flags
+    ai_flags=$(strings "$target" 2>/dev/null | grep -iE '(flag|CTF|picoCTF|HTB|THM|LKS)\{[^}]+\}' | head -5)
+    if [[ -n "$ai_flags" ]]; then
+      found "Flag ditemukan di dalam model AI: $ai_flags"
+      log_report "AI_MODEL_FLAG: $ai_flags"
+      while IFS= read -r f; do
+        FLAG_TOOLS_MAP+=("$f|[AI_MODEL_SCAN] File: $(basename "$target")")
+      done <<< "$ai_flags"
+    fi
+  else
+    ok "File tidak terdeteksi sebagai AI model (Torch/Pickle)"
+  fi
+  echo ""
 }
 
 # ══════════════════════════════════════════════════════════════════
@@ -4533,6 +5004,9 @@ mod_cryptography() {
   local target="$1"
   section "🔐 Cryptography Analysis"
   log_report "MODULE: Cryptography"
+  log_report "TARGET: $target"
+  log_report "TIME: $(date '+%Y-%m-%d %H:%M:%S')"
+  log_report "---"
   echo -e "  ${DIM}Target: $target${NC}"
   echo ""
 
@@ -6411,8 +6885,480 @@ for name,install,desc in tools:
     print(f'  \033[1m{name:<18}\033[0m {install:<40} \033[2m{desc}\033[0m')
 " 2>/dev/null
 
+  # ════════════════════════════════════════════════════════════
+  #  BAGIAN 6 — PRNG ATTACKS
+  # ════════════════════════════════════════════════════════════
+  divider
+  info "${BOLD}[6/10] PRNG Attacks${NC} — Mersenne Twister, LCG, LFSR"
   echo ""
-  log_report "CRYPTO_MODULE: Selesai — semua sub-analisis crypto dijalankan"
+
+  # ── 6a. LCG (Linear Congruential Generator) ─────────────
+  info "${BOLD}[LCG Parameter Recovery]${NC}"
+  echo -e "  ${DIM}Mencari pola LCG: X(n+1) = (a*X(n) + c) mod m${NC}"
+  if [[ -f "$target" ]]; then
+    python3 -c "
+import re
+try:
+    with open('$target','r',errors='ignore') as f:
+        text=f.read()
+    # Cari sequence angka
+    nums=[int(x) for x in re.findall(r'\b(\d{3,15})\b', text) if 0 < int(x) < 2**48]
+    nums=nums[:20]
+    if len(nums)>=3:
+        print(f'  Angka ditemukan: {nums[:8]}...')
+        # Hitung differences
+        diffs=[nums[i+1]-nums[i] for i in range(min(5,len(nums)-1))]
+        print(f'  Differences: {diffs}')
+        # Cek apakah linear
+        if len(set(diffs))==1:
+            print(f'  \033[0;32m[+]\033[0m Pola LINEAR terdeteksi — c={diffs[0]}')
+            print(f'  \033[0;35m[FLAG?]\033[0m LCG dengan c={diffs[0]}, a=1, m=2^64')
+        elif len(diffs)>=3:
+            # LCG crack: a = (x2-x1)/(x1-x0) mod m
+            print(f'  \033[0;33m[!]\033[0m Non-linear — kemungkinan LCG dengan a>1')
+            print(f'  Tool: z3-solver untuk recover parameter a, c, m')
+            print(f'  Panduan: cari 3 output berurutan → solve system persamaan')
+        else:
+            print(f'  \033[0;32m[+]\033[0m Tidak cukup data untuk analisis LCG')
+    else:
+        print(f'  \033[0;32m[+]\033[0m Tidak ditemukan sequence angka (min 3 angka 3+ digit)')
+except Exception as e:
+    print(f'  Error: {e}')
+" 2>/dev/null
+  fi
+
+  # ── 6b. Mersenne Twister Prediction ─────────────────────
+  divider
+  info "${BOLD}[Mersenne Twister State Recovery]${NC}"
+  echo -e "  ${DIM}Jika ada 624 output MT19937 berurutan → state bisa di-recover${NC}"
+  if [[ -f "$target" ]]; then
+    python3 -c "
+import re
+try:
+    with open('$target','r',errors='ignore') as f:
+        text=f.read()
+    nums=[int(x) for x in re.findall(r'\b(\d{8,12})\b', text)]
+    if len(nums)>=624:
+        print(f'  \033[0;35m[FLAG?]\033[0m {len(nums)} angka 8-12 digit ditemukan')
+        print(f'  \033[0;35m[FLAG?]\033[0m Kemungkinan output MT19937 — 624 angka cukup untuk clone state!')
+        print(f'  Tool: randcrack (pip install randcrack)')
+        print(f'  Python: import randcrack; rc=RandCrack(); [rc.submit(n) for n in nums[:624]]; print(rc.predict_getrandbits(32))')
+    elif len(nums)>=10:
+        print(f'  \033[0;33m[!]\033[0m {len(nums)} angka besar ditemukan (butuh 624 untuk MT19937 full clone)')
+        print(f'  Jika ada akses ke lebih banyak output → gunakan tool: randcrack')
+    else:
+        print(f'  \033[0;32m[+]\033[0m Tidak cukup output MT19937 ({len(nums)} angka, butuh 624)')
+except Exception as e:
+    print(f'  Error: {e}')
+" 2>/dev/null
+  fi
+
+  # ── 6c. LFSR (Linear Feedback Shift Register) ───────────
+  divider
+  info "${BOLD}[LFSR State Reconstruction]${NC}"
+  echo -e "  ${DIM}Mencari binary sequence yang mungkin dari LFSR${NC}"
+  if [[ -f "$target" ]]; then
+    python3 -c "
+import re
+try:
+    with open('$target','r',errors='ignore') as f:
+        text=f.read()
+    # Cari binary strings
+    bin_seqs=re.findall(r'\b([01]{16,})\b', text)
+    if bin_seqs:
+        print(f'  Binary sequences ditemukan: {len(bin_seqs)}')
+        for i,seq in enumerate(bin_seqs[:3]):
+            print(f'  [{i+1}] {seq[:60]}...' if len(seq)>60 else f'  [{i+1}] {seq}')
+        print(f'  \033[0;33m[!]\033[0m Gunakan Berlekamp-Massey algorithm untuk recover feedback polynomial')
+        print(f'  Tool: sage')
+        print(f'  Sage: L = berlekamp_massey([int(b) for b in seq]); print(L)')
+        print(f'  \033[0;35m[FLAG?]\033[0m LFSR bisa diprediksi jika tahu feedback polynomial + initial state')
+    else:
+        print(f'  \033[0;32m[+]\033[0m Tidak ditemukan binary sequence (min 16 bit)')
+except Exception as e:
+    print(f'  Error: {e}')
+" 2>/dev/null
+  fi
+
+  # ════════════════════════════════════════════════════════════
+  #  BAGIAN 7 — AES MODE ANALYSIS
+  # ════════════════════════════════════════════════════════════
+  divider
+  info "${BOLD}[7/10] AES Mode Analysis${NC} — ECB, CBC, OFB, CFB, CTR, GCM Attacks"
+  echo ""
+
+  # ── 7a. ECB Codebook Attack ────────────────────────────────
+  info "${BOLD}[ECB Codebook Attack]${NC}"
+  echo -e "  ${DIM}ECB: identical plaintext blocks → identical ciphertext blocks${NC}"
+  if [[ -f "$target" ]]; then
+    python3 -c "
+try:
+    with open('$target','rb') as f:
+        data=f.read()
+    if len(data)>=32:
+        # Check 16-byte block alignment
+        blocks=[data[i:i+16] for i in range(0, len(data)-15, 16)]
+        unique=len(set(blocks))
+        total=len(blocks)
+        dupes=total-unique
+        print(f'  Total blocks (16-byte): {total}')
+        print(f'  Unique blocks: {unique}')
+        print(f'  Duplicate blocks: {dupes}')
+        if dupes>0:
+            print(f'  \033[0;35m[FLAG?]\033[0m \033[1mDUPLICATE BLOCKS DETECTED → ECB mode!\033[0m')
+            print(f'  \033[0;35m[FLAG?]\033[0m ECB vulnerable to codebook attack — bisa identify pattern')
+            print(f'  Attack: map ciphertext blocks → known plaintext blocks')
+            # Show dupes
+            from collections import Counter
+            c=Counter(blocks)
+            for blk,count in c.most_common(3):
+                if count>1:
+                    print(f'  Block {blk[:8].hex()}: muncul {count}x')
+        else:
+            print(f'  \033[0;32m[+]\033[0m Tidak ada duplicate blocks — bukan ECB atau data terenkripsi baik')
+    else:
+        print(f'  \033[0;32m[+]\033[0m File terlalu kecil untuk block analysis')
+except Exception as e:
+    print(f'  Error: {e}')
+" 2>/dev/null
+  fi
+
+  # ── 7b. CBC Bit-Flipping Attack ───────────────────────────
+  divider
+  info "${BOLD}[CBC Bit-Flipping Attack Guide]${NC}"
+  echo -e "  ${DIM}CBC: C(i) XOR P(i+1) = P(i+1) plaintext setelah decrypt${NC}"
+  python3 -c "
+print('  CBC Bit-Flipping Attack:')
+print('  ┌─ Modifikasi byte di ciphertext block i → mengubah byte spesifik di block i+1')
+print('  ├─ Formula: C\'[i] = C[i] XOR P[i+1] XOR P_desired')
+print('  ├─ Use case: ubah \"user=guest\" → \"user=admin\" pada encrypted cookie')
+print('  └─ Tool: Python manual XOR, atau CyberChef XOR')
+print()
+print('  CBC IV Recovery:')
+print('  ┌─ IV = D(C[0]) XOR P[0] — jika tahu P[0] dan punya C[0]')
+print('  └─ Banyak CTF: P[0] = \"GET /\" atau known header')
+" 2>/dev/null
+
+  # ── 7c. CTR Nonce Reuse Attack ─────────────────────────────
+  divider
+  info "${BOLD}[CTR Nonce Reuse — Two-Time Pad]${NC}"
+  echo -e "  ${DIM}Jika nonce/IV reused → C1 XOR C2 = P1 XOR P2${NC}"
+  python3 -c "
+print('  CTR Nonce Reuse Attack:')
+print('  ┌─ keystream = AES(key, nonce || counter) — sama untuk semua pesan dengan nonce sama')
+print('  ├─ C1 = P1 XOR keystream, C2 = P2 XOR keystream')
+print('  ├─ C1 XOR C2 = P1 XOR P2 → two-time pad!')
+print('  ├─ Recover: crib dragging dengan known plaintext (\"the \", \"flag{\", dll)')
+print('  └─ Tool: https://github.com/SpiderLabs/cribdrag')
+print()
+print('  Deteksi nonce reuse:')
+print('  ┌─ Cek apakah multiple ciphertexts memiliki panjang block yang sama')
+print('  ├─ XOR two ciphertexts → jika hasilnya readable text → nonce reused')
+print('  └─ Jika file berisi multiple hex strings → coba XOR pairwise')
+" 2>/dev/null
+
+  # ── 7d. GCM Tag Forgery ───────────────────────────────────
+  divider
+  info "${BOLD}[GCM Tag Forgery & IV Reuse]${NC}"
+  echo -e "  ${DIM}AES-GCM: jika IV reused → bisa forge authentication tag${NC}"
+  python3 -c "
+print('  AES-GCM IV Reuse Attack:')
+print('  ┌─ GCM keamanan bergantung pada unique IV per encrypt')
+print('  ├─ IV reuse → attacker bisa recover H = AES(key, 0)')
+print('  ├─ Dengan H → bisa forge tag untuk ciphertext apapun')
+print('  └─ Tool: custom Python script, atau pycryptodome AESGCM')
+print()
+print('  GCM -> ECB downgrade:')
+print('  ┌─ Beberapa implementasi GCM fallback ke ECB jika GCM tidak supported')
+print('  └─ Cek response error: \"GCM tag mismatch\" vs \"ECB decrypt error\"')
+" 2>/dev/null
+
+  # ── 7e. OFB/CFB Attack Patterns ──────────────────────────
+  divider
+  info "${BOLD}[OFB/CFB Attack Patterns]${NC}"
+  python3 -c "
+print('  OFB (Output Feedback):')
+print('  ┌─ keystream = E(key, IV), E(key, E(key, IV)), ...')
+print('  ├─ IV reuse = keystream reuse → same as CTR nonce reuse')
+print('  └─ Bit-flipping: sama seperti CTR — XOR posisi target')
+print()
+print('  CFB (Cipher Feedback):')
+print('  ┌─ error propagation: 1 byte error di C[i] → corrupt P[i] dan P[i+1]')
+print('  ├─ Bit-flipping: sama, tapi error spread ke block berikutnya')
+print('  └─ CFB-1/CFB-8: stream cipher variant, lebih rentan bit-flip')
+" 2>/dev/null
+
+  # ════════════════════════════════════════════════════════════
+  #  BAGIAN 8 — ECC & DSA ATTACKS
+  # ════════════════════════════════════════════════════════════
+  divider
+  info "${BOLD}[8/10] ECC & DSA Attacks${NC} — Smart's Attack, ECDSA Nonce Reuse, RSA Signatures"
+  echo ""
+
+  # ── 8a. Smart's Attack on ECC ──────────────────────────────
+  info "${BOLD}[Smart's Attack — Anomalous Curves]${NC}"
+  echo -e "  ${DIM}Jika curve E(Fp) memiliki #E(Fp) = p (anomalous) → ECDLP solved in O(log p)${NC}"
+  python3 -c "
+print('  Smart\'s Attack (Canonical Lift):')
+print('  ┌─ Target: curve E/Fp dengan trace of Frobenius = 1 (#E = p)')
+print('  ├─ Lift points ke Qp (p-adic numbers) → map ECDLP ke discrete log di Qp')
+print('  ├─ Solved dengan simple arithmetic → O(log p)')
+print('  └─ Tool: SageMath')
+print()
+print('  Sage code:')
+print('    E = EllipticCurve(GF(p), [a, b])')
+print('    if E.order() == p:')
+print('        print(\"ANOMALOUS CURVE! Smart\'s attack applicable\")')
+print('        # Use p-adic lift atau E.log()')
+print('        k = G.discrete_log(P)  # G = generator, P = target point')
+print('        print(f\"Private key: {k}\")')
+print()
+print('  Deteksi anomalous curve:')
+print('  ┌─ Jika challenge memberikan p, a, b, G, P → hitung E.order()')
+print('  ├─ Jika order == p → langsung solve dengan E.log() di Sage')
+print('  └─ Jika order != p → coba MOV attack atau cek small subgroup')
+" 2>/dev/null
+
+  # ── 8b. ECDSA Nonce Reuse ─────────────────────────────────
+  divider
+  info "${BOLD}[ECDSA Nonce Reuse Attack]${NC}"
+  echo -e "  ${DIM}Jika k (nonce) reused pada 2 signatures → private key bisa di-recover${NC}"
+  python3 -c "
+print('  ECDSA Nonce Reuse Attack:')
+print('  ┌─ Signature: (r, s) dimana r = (k*G).x, s = k^-1 * (z + r*d) mod n')
+print('  ├─ Jika k sama untuk (r,s1) dan (r,s2):')
+print('  ├─ k = (z1 - z2) * (s1 - s2)^-1 mod n')
+print('  ├─ d = (s1*k - z1) * r^-1 mod n')
+print('  └─ Private key d recovered!')
+print()
+print('  Partial nonce bias (MSB/LSB known):')
+print('  ┌─ Jika beberapa bit k diketahui → lattice attack (Howgrave-Graham & Smart)')
+print('  ├─ Butuh ~sqrt(n) signatures untuk full key recovery')
+print('  └─ Tool: lattice_attack (pycryptodome extensions)')
+print()
+print('  Deteksi:')
+print('  ┌─ Cari 2 signatures dengan r yang sama (r = (k*G).x)')
+print('  ├─ Atau: signatures dari pesan berbeda dengan pattern yang sama')
+print('  └─ Parse: r,s sebagai integers, cek r1 == r2')
+" 2>/dev/null
+
+  # ── 8c. RSA Signature Attacks ─────────────────────────────
+  divider
+  info "${BOLD}[RSA Signature Attacks]${NC}"
+  echo -e "  ${DIM}Bleichenbacher, key recovery, padding oracle${NC}"
+  python3 -c "
+print('  RSA Signature Forgery Attacks:')
+print()
+print('  1. Bleichenbacher\'s Signature Forgery (CVE-2006-4790):')
+print('     ┌─ PKCS#1 v1.5 signature: 00 01 FF..FF 00 ASN.1 Hash')
+print('     ├─ Implementasi yang tidak validate padding bytes → forge signature')
+print('     └─ Craft: 00 01 FF..FF 00 ASN.1 Hash GARBAGE → valid signature')
+print()
+print('  2. RSA Key Recovery from Signatures:')
+print('     ┌─ Jika punya 2 signatures: N = gcd(S1^e - M1, S2^e - M2)')
+print('     └─ Similar to common modulus attack')
+print()
+print('  3. Low Exponent Signature (e=3):')
+print('     ┌─ Jika e=3 dan message kecil → M = cbrt(S^e mod N) = S^e (no mod)')
+print('     └─ Direct cube root attack')
+print()
+print('  4. Chosen Message Attack:')
+print('     ┌─ Sign(M1), Sign(M2) → Sign(M1*M2) = Sign(M1)*Sign(M2) mod N')
+print('     └─ RSA multiplicative property → forge signature')
+" 2>/dev/null
+
+  # ════════════════════════════════════════════════════════════
+  #  BAGIAN 9 — AFFINE & SUBSTITUTION CIPHERS
+  # ════════════════════════════════════════════════════════════
+  divider
+  info "${BOLD}[9/10] Affine & Substitution Ciphers${NC}"
+  echo ""
+
+  # ── 9a. Affine Cipher ──────────────────────────────────────
+  info "${BOLD}[Affine Cipher Solver]${NC}"
+  echo -e "  ${DIM}E(x) = (ax + b) mod 26, perlu a coprime dengan 26${NC}"
+  if [[ -f "$target" ]]; then
+    python3 -c "
+import re
+try:
+    with open('$target','r',errors='ignore') as f:
+        text=f.read()
+    alpha_only=re.sub(r'[^a-zA-Z]','',text)[:500]
+    if len(alpha_only)>=20:
+        import math
+        def affine_decrypt(c,a,b):
+            # a^-1 mod 26
+            try: a_inv=pow(a,-1,26)
+            except: return None
+            r=''
+            for ch in c:
+                if ch.isalpha():
+                    base=ord('A') if ch.isupper() else ord('a')
+                    r+=chr((a_inv*(ord(ch)-base)-b)%26+base)
+                else: r+=ch
+            return r
+        # a must be coprime with 26: a in {1,3,5,7,9,11,15,17,19,21,23,25}
+        valid_a=[a for a in range(1,26) if math.gcd(a,26)==1]
+        flag_re=re.compile(r'[A-Za-z0-9_]{2,12}\{[^}]{3,80}\}')
+        found_any=False
+        for a in valid_a:
+            for b in range(26):
+                pt=affine_decrypt(alpha_only,a,b)
+                if pt and flag_re.search(pt):
+                    m=flag_re.search(pt)
+                    print(f'  \033[0;32m★ FLAG\033[0m a={a}, b={b}: {m.group()[:80]}')
+                    found_any=True
+        if not found_any:
+            print(f'  \033[0;32m[+]\033[0m Tidak ada affine decrypt yang menghasilkan flag')
+            print(f'  Coba: brute-force manual atau cek frekuensi huruf')
+    else:
+        print(f'  \033[0;32m[+]\033[0m Konten terlalu pendek untuk affine analysis')
+except Exception as e:
+    print(f'  Error: {e}')
+" 2>/dev/null
+  fi
+
+  # ── 9b. Monoalphabetic Substitution ────────────────────────
+  divider
+  info "${BOLD}[Monoalphabetic Substitution Cipher]${NC}"
+  echo -e "  ${DIM}Frequency analysis untuk substitution cipher${NC}"
+  if [[ -f "$target" ]]; then
+    python3 -c "
+import re, collections
+try:
+    with open('$target','r',errors='ignore') as f:
+        text=f.read()
+    alpha_only=re.sub(r'[^a-zA-Z]','',text)
+    if len(alpha_only)>=50:
+        freq=collections.Counter(alpha_only.lower())
+        total=sum(freq.values())
+        # English frequency order
+        eng_order='etaoinsrhldcumfpgwybvkxjqz'
+        found_freq=sorted(freq.keys(), key=lambda x:-freq[x])
+        mapping=dict(zip(found_freq[:26], eng_order[:len(found_freq)]))
+        # Apply mapping
+        pt=''
+        for c in alpha_only[:200].lower():
+            pt+=mapping.get(c,'_')
+        print(f'  Text length: {len(alpha_only)} huruf')
+        print(f'  Frequency order: {\"\".join(found_freq[:13])}')
+        print(f'  English order:   {eng_order[:13]}')
+        print(f'  Suggested mapping:')
+        for c in sorted(mapping.keys()):
+            print(f'    {c.upper()} → {mapping[c]}', end='')
+        print()
+        print(f'  Sample decryption (first 100 chars):')
+        print(f'    {DIM}{pt[:100]}{NC}')
+        print()
+        print(f'  \033[0;33m[!]\033[0m Ini hanya heuristic — perlu manual refinement')
+        print(f'  Tool online: https://www.dcode.fr/substitution-cipher')
+        print(f'  Tool CLI: quipqiup (https://www.quipqiup.com/)')
+    else:
+        print(f'  \033[0;32m[+]\033[0m Terlalu sedikit data untuk frequency analysis')
+except Exception as e:
+    print(f'  Error: {e}')
+" 2>/dev/null
+  fi
+
+  # ── 9c. Polyalphabetic / Vigenere Advanced ──────────────
+  divider
+  info "${BOLD}[Polyalphabetic Cipher — Autokey, Beaufort, Gronsfeld]${NC}"
+  python3 -c "
+print('  Polyalphabetic Cipher Variants:')
+print()
+print('  Autokey Cipher:')
+print('  ┌─ Key = keyword + plaintext itself')
+print('  ├─ E(i) = (P(i) + K(i)) mod 26, K(i) = keyword[i] if i<len(keyword) else P(i-len)')
+print('  └─ Crack: guess keyword length, then use frequency on shifted positions')
+print()
+print('  Beaufort Cipher:')
+print('  ┌─ E(x) = (key - x) mod 26 — self-inverse seperti Atbash+Caesar')
+print('  ├─ Decryption = encryption (same operation)')
+print('  └─ Crack: sama seperti Vigenere, tapi decrypt = encrypt')
+print()
+print('  Gronsfeld Cipher:')
+print('  ┌─ Vigenere dengan key = digits 0-9 saja (bukan letters)')
+print('  ├─ Hanya 10^key_len kemungkinan (vs 26^key_len)')
+print('  └─ Crack: brute force key_len 3-6 → 1000-1M combinations')
+" 2>/dev/null
+
+  # ════════════════════════════════════════════════════════════
+  #  BAGIAN 10 — ADVANCED HASH ATTACKS
+  # ════════════════════════════════════════════════════════════
+  divider
+  info "${BOLD}[10/10] Advanced Hash Attacks${NC} — Length Extension, Collision Detection"
+  echo ""
+
+  # ── 10a. Length Extension Attack (implemented) ────────────
+  info "${BOLD}[Length Extension Attack — Implementation]${NC}"
+  echo -e "  ${DIM}MD5/SHA1/SHA256 vulnerable: H(secret || message) → H(secret || message || padding || append)${NC}"
+  if hashpumpy --help &>/dev/null; then
+    ok "hashpumpy tersedia — bisa melakukan length extension attack"
+    echo -e "  ${DIM}Contoh penggunaan:${NC}"
+    echo -e "    python3 -c \"import hashpumpy; print(hashpumpy.hashpump(<original_hash>, <original_data>, <append_data>, <secret_len>))\""
+  else
+    warn "hashpumpy tidak terinstall"
+    echo -e "  ${DIM}Install: pip3 install hashpumpy${NC}"
+  fi
+  python3 -c "
+print()
+print('  Length Extension Attack Guide:')
+print('  ┌─ Algoritma rentan: MD5, SHA1, SHA256, SHA512 (Merkle-Damgard construction)')
+print('  ├─ Algoritma aman: SHA3, BLAKE2, HMAC (tidak vulnerable)')
+print('  │')
+print('  ├─ Skenario CTF:')
+print('  │  Diberikan: signature = MD5(secret || message)')
+print('  │  Target: forge signature untuk message || append')
+print('  │')
+print('  ├─ Python code (hashpumpy):')
+print('  │  import hashpumpy')
+print('  │  new_hash, new_data = hashpumpy.hashpump(')
+print('  │      original_signature,  # MD5(secret || original_message)')
+print('  │      original_message,    # data yang di-sign')
+print('  │      append_data,         # data yang ingin di-append')
+print('  │      secret_length        # panjang secret key (brute force 1-64)')
+print('  │  )')
+print('  │')
+print('  └─ Brute force secret length: coba 1 sampai 64, cek response server')
+print()
+print('  Hash Collision Detection:')
+print('  ┌─ MD5: sudah broken (Wang et al. 2004) — bisa buat 2 file berbeda dengan hash sama')
+print('  ├─ SHA1: SHAttered attack (2017) — collision ditemukan')
+print('  └─ Tool: fastcoll (MD5), sha1collider (SHA1)')
+" 2>/dev/null
+
+  # ── 10b. Hash Length Extension Detection ──────────────────
+  divider
+  info "${BOLD}[Auto-Detect Length Extension Vulnerability]${NC}"
+  if [[ -f "$target" ]]; then
+    python3 -c "
+import re
+try:
+    with open('$target','r',errors='ignore') as f:
+        text=f.read()
+    hashes=re.findall(r'\b([a-f0-9]{32,128})\b', text)
+    md5s=[h for h in hashes if len(h)==32]
+    sha1s=[h for h in hashes if len(h)==40]
+    sha256s=[h for h in hashes if len(h)==64]
+    sha512s=[h for h in hashes if len(h)==128]
+    if md5s or sha1s or sha256s:
+        print(f'  Hash ditemukan:')
+        if md5s: print(f'    MD5 (32 hex): {len(md5s)} ditemukan')
+        if sha1s: print(f'    SHA1 (40 hex): {len(sha1s)} ditemukan')
+        if sha256s: print(f'    SHA256 (64 hex): {len(sha256s)} ditemukan')
+        if sha512s: print(f'    SHA512 (128 hex): {len(sha512s)} ditemukan')
+        print(f'  \033[0;35m[FLAG?]\033[0m MD5/SHA1/SHA256 RENTAN terhadap length extension attack')
+        print(f'  Jika ada pattern: hash(secret || message) → bisa forge hash(secret || message || padding || evil)')
+        print(f'  Tool: hashpumpy (pip install hashpumpy) atau hash_extender (GitHub)')
+    else:
+        print(f'  \033[0;32m[+]\033[0m Tidak ditemukan hash yang vulnerable')
+except Exception as e:
+    print(f'  Error: {e}')
+" 2>/dev/null
+  fi
+
+  echo ""
+  log_report "CRYPTO_MODULE: Selesai — semua 10 sub-analisis crypto dijalankan"
   ok "Modul Cryptography selesai."
 }
 
@@ -6433,6 +7379,9 @@ print_summary() {
   echo -e "  ${W}Target  :${NC} $TARGET"
   echo -e "  ${W}Waktu   :${NC} $(date '+%Y-%m-%d %H:%M:%S')"
   echo -e "  ${W}Report  :${NC} $REPORT_FILE"
+  if [[ -n "$FLAG_FILTER" ]]; then
+    echo -e "  ${W}Filter  :${NC} ${Y}$FLAG_FILTER${NC}"
+  fi
 
   echo ""
 
@@ -6468,7 +7417,10 @@ print_summary() {
     hval=$(echo "$hit" | sed 's/^\[[^]]*\] //')
     # Cek apakah mengandung flag pattern
     if echo "$hval" | grep -qE '[A-Za-z0-9_]{2,12}\{[^}]+\}'; then
-      all_flags+=("DECODE_HIT: $hit")
+      # Apply filter
+      if _flag_matches_filter "$hval"; then
+        all_flags+=("DECODE_HIT: $hit")
+      fi
     fi
   done
 
@@ -6486,6 +7438,10 @@ print_summary() {
       local fval
       fval=$(echo "$entry" | grep -oE '[A-Za-z0-9_]{2,12}\{[^}]+\}' | head -1)
       [[ -z "$fval" ]] && continue
+      # Apply filter
+      if ! _flag_matches_filter "$fval"; then
+        continue
+      fi
       # Dedup
       local dup=false
       for sv in "${seen_vals[@]}"; do [[ "$sv" == "$fval" ]] && dup=true; done
@@ -6501,6 +7457,10 @@ print_summary() {
       local fval
       fval=$(echo "$entry" | grep -oE '[A-Za-z0-9_]{2,12}\{[^}]+\}' | head -1)
       [[ -z "$fval" ]] && continue
+      # Apply filter
+      if ! _flag_matches_filter "$fval"; then
+        continue
+      fi
       local dup=false
       for sv in "${seen_vals[@]}"; do [[ "$sv" == "$fval" ]] && dup=true; done
       [[ "$dup" == true ]] && continue
@@ -6517,6 +7477,10 @@ print_summary() {
       fval=$(echo "$entry" | grep -oE '[A-Za-z0-9_]{2,12}\{[^}]+\}' | head -1)
       [[ -z "$fval" ]] && fval=$(echo "$entry" | sed 's/^[^:]*://' | xargs 2>/dev/null)
       [[ -z "$fval" ]] && continue
+      # Apply filter
+      if ! _flag_matches_filter "$fval"; then
+        continue
+      fi
       local dup=false
       for sv in "${seen_vals[@]}"; do [[ "$sv" == "$fval" ]] && dup=true; done
       [[ "$dup" == true ]] && continue
@@ -6525,16 +7489,339 @@ print_summary() {
     done
 
     if [[ ${#seen_vals[@]} -eq 0 ]]; then
-      echo -e "  ${DIM}(Tidak ada flag eksplisit — lihat DECODE HITS di atas)${NC}"
+      if [[ -n "$FLAG_FILTER" ]]; then
+        echo -e "  ${DIM}(Tidak ada flag yang match dengan filter: $FLAG_FILTER)${NC}"
+      else
+        echo -e "  ${DIM}(Tidak ada flag eksplisit — lihat DECODE HITS di atas)${NC}"
+      fi
     fi
   else
     echo -e "  ${DIM}[FLAG CANDIDATES]${NC}"
     echo -e "  ${DIM}Tidak ada flag yang terdeteksi.${NC}"
   fi
 
+  # ════════════════════════════════════════════════════════════
+  #  TAMPILKAN SEMUA HASIL DECODE (Termasuk yang garbled)
+  # ════════════════════════════════════════════════════════════
+  if [[ ${#ALL_DECODE_RESULTS[@]} -gt 0 ]]; then
+    echo ""
+    echo -e "${BOLD}${Y}╔══════════════════════════════════════════════╗${NC}"
+    echo -e "${BOLD}${Y}║     SEMUA HASIL DECODE (All Decode Results)  ║${NC}"
+    echo -e "${BOLD}${Y}╚══════════════════════════════════════════════╝${NC}"
+    echo -e "  ${DIM}Total: ${#ALL_DECODE_RESULTS[@]} hasil decode dari semua metode${NC}"
+    echo ""
+
+    # Kelompokkan berdasarkan method
+    local shown_methods=()
+    for result in "${ALL_DECODE_RESULTS[@]}"; do
+      local method
+      method=$(echo "$result" | grep -oP '^\[\K[^\]]+' 2>/dev/null || echo "UNKNOWN")
+
+      # Cek apakah method sudah ditampilkan
+      local already_shown=false
+      for m in "${shown_methods[@]}"; do
+        [[ "$m" == "$method" ]] && already_shown=true && break
+      done
+
+      if [[ "$already_shown" == false ]]; then
+        shown_methods+=("$method")
+        echo -e "  ${C}${BOLD}[$method]${NC}"
+
+        # Tampilkan semua hasil untuk method ini
+        for r in "${ALL_DECODE_RESULTS[@]}"; do
+          local r_method
+          r_method=$(echo "$r" | grep -oP '^\[\K[^\]]+' 2>/dev/null || echo "UNKNOWN")
+          if [[ "$r_method" == "$method" ]]; then
+            local decoded_part
+            decoded_part=$(echo "$r" | sed 's/^\[[^]]*\] //' | grep -oP ' → \K.*' 2>/dev/null || echo "$r")
+            # Cek apakah decoded part mengandung flag pattern
+            if echo "$decoded_part" | grep -qE '[A-Za-z0-9_]{2,12}\{[^}]+\}'; then
+              # Apply filter - hanya tampilkan flag yang match
+              if _flag_matches_filter "$decoded_part"; then
+                echo -e "    ${G}★${NC} $decoded_part"
+              fi
+            else
+              # Non-flag results: tampilkan jika tidak ada filter, atau selalu tampilkan
+              if [[ -z "$FLAG_FILTER" ]]; then
+                echo -e "    ${DIM}◆${NC} $decoded_part"
+              fi
+            fi
+          fi
+        done
+        echo ""
+      fi
+    done
+
+    # Simpan ke report
+    log_report "ALL_DECODE_RESULTS_COUNT: ${#ALL_DECODE_RESULTS[@]}"
+    for result in "${ALL_DECODE_RESULTS[@]}"; do
+      log_report "ALL_DECODE_RESULT: $result"
+    done
+  fi
+
+  # Jalankan Pencarian Bertarget di akhir summary agar muncul paling bawah
+  [[ -n "$TARGET_KEYWORDS" ]] && mod_targeted_search "$TARGET"
+
   echo ""
   echo -e "  ${DIM}Scan selesai. Good luck on your CTF! 🚩${NC}"
   echo ""
+
+  # ════════════════════════════════════════════════════════════
+  #  WRITEUP HELPER — Tools/Metode yang Digunakan per Flag
+  # ════════════════════════════════════════════════════════════
+  if [[ ${#FLAG_TOOLS_MAP[@]} -gt 0 ]]; then
+    echo ""
+    echo -e "${BOLD}${W}╔══════════════════════════════════════════════════════╗${NC}"
+    echo -e "${BOLD}${W}║           📝 WRITEUP HELPER — Tools & Methods        ║${NC}"
+    echo -e "${BOLD}${W}╚══════════════════════════════════════════════════════╝${NC}"
+    echo ""
+    echo -e "  ${DIM}Penjelasan tools/metode yang digunakan untuk mendapatkan setiap flag.${NC}"
+    echo -e "  ${DIM}Gunakan ini untuk memudahkan pembuatan writeup.${NC}"
+    echo ""
+
+    # Deduplicate flags dan kelompokkan tools
+    local unique_flags=()
+    local seen_flags=()
+
+    # Ekstrak unique flags DENGAN FILTER
+    for entry in "${FLAG_TOOLS_MAP[@]}"; do
+      local flag
+      flag=$(echo "$entry" | cut -d'|' -f1)
+      
+      # Apply filter - skip jika tidak match
+      if ! _flag_matches_filter "$flag"; then
+        continue
+      fi
+      
+      # Cek apakah sudah pernah
+      local dup=false
+      for sf in "${seen_flags[@]}"; do
+        [[ "$sf" == "$flag" ]] && dup=true && break
+      done
+      if [[ "$dup" == false ]]; then
+        unique_flags+=("$flag")
+        seen_flags+=("$flag")
+      fi
+    done
+
+    # Untuk setiap unique flag, tampilkan tools yang digunakan
+    local flag_num=0
+    for flag in "${unique_flags[@]}"; do
+      (( flag_num++ ))
+      echo -e "  ${G}${BOLD}FLAG #$flag_num:${NC} ${W}${flag}${NC}"
+      echo ""
+
+      # Kumpulkan semua tools untuk flag ini
+      local tools_used=()
+      for entry in "${FLAG_TOOLS_MAP[@]}"; do
+        local e_flag e_tool
+        e_flag=$(echo "$entry" | cut -d'|' -f1)
+        e_tool=$(echo "$entry" | cut -d'|' -f2-)
+        if [[ "$e_flag" == "$flag" ]]; then
+          tools_used+=("$e_tool")
+        fi
+      done
+
+      # Kategorikan tools
+      local decode_methods=()
+      local source_module=""
+      local extraction_tools=()
+
+      for tool in "${tools_used[@]}"; do
+        # Deteksi jenis method dari nama tool
+        if echo "$tool" | grep -qiE 'PLAINTEXT_FLAG|ORIGINAL_INPUT'; then
+          echo -e "    ${Y}📍 Sumber:${NC} Flag ditemukan dalam **plaintext** di file/binary"
+        elif echo "$tool" | grep -qiE 'BASE64'; then
+          decode_methods+=("Base64 decode")
+        elif echo "$tool" | grep -qiE 'ROT13|ROT[0-9]+|CAESAR'; then
+          decode_methods+=("Caesar/ROT cipher")
+        elif echo "$tool" | grep -qiE 'HEX'; then
+          decode_methods+=("Hex decode")
+        elif echo "$tool" | grep -qiE 'REVERSED|REV\+'; then
+          decode_methods+=("String reversal")
+        elif echo "$tool" | grep -qiE 'L33T'; then
+          decode_methods+=("Leetspeak normalization")
+        elif echo "$tool" | grep -qiE 'MORSE'; then
+          decode_methods+=("Morse code decode")
+        elif echo "$tool" | grep -qiE 'XOR'; then
+          decode_methods+=("XOR brute force")
+        elif echo "$tool" | grep -qiE 'CHAIN|NIGHTFALL'; then
+          decode_methods+=("Chain cipher solver (auto)")
+        elif echo "$tool" | grep -qiE 'STRINGS_FLAGS|BINARY_FLAGS'; then
+          extraction_tools+=("strings (grep flag pattern)")
+        elif echo "$tool" | grep -qiE 'BOF_DANGEROUS_FUNC'; then
+          extraction_tools+=("Buffer overflow function analysis (objdump)")
+        elif echo "$tool" | grep -qiE 'ROP_'; then
+          extraction_tools+=("ROP chain analysis (ROPgadget/objdump)")
+        elif echo "$tool" | grep -qiE 'SHELLCODE_'; then
+          extraction_tools+=("Shellcode pattern detection (xxd/strings)")
+        elif echo "$tool" | grep -qiE 'FORMAT_'; then
+          extraction_tools+=("Format string vulnerability analysis (objdump)")
+        elif echo "$tool" | grep -qiE 'CHECKSEC|PROT_'; then
+          extraction_tools+=("Protection mechanism analysis (checksec/readelf)")
+        elif echo "$tool" | grep -qiE 'ZSTEG|STEGHIDE|STEGSEEK'; then
+          extraction_tools+=("Steganography tools (zsteg/steghide/stegseek)")
+        elif echo "$tool" | grep -qiE 'BINWALK'; then
+          extraction_tools+=("Binwalk (embedded file detection)")
+        elif echo "$tool" | grep -qiE 'EXIFTOOL|METADATA'; then
+          extraction_tools+=("Exiftool (metadata analysis)")
+        elif echo "$tool" | grep -qiE 'PCAP_|TSHARK|NETWORK'; then
+          extraction_tools+=("Network forensics (tshark/PCAP analysis)")
+        elif echo "$tool" | grep -qiE 'VOLATILITY|MEMORY'; then
+          extraction_tools+=("Memory forensics (volatility3/strings)")
+        elif echo "$tool" | grep -qiE 'CRYPTO_|RSA_|AES_|HASH_'; then
+          extraction_tools+=("Cryptographic analysis (crypto module)")
+        elif echo "$tool" | grep -qiE 'DROPPER_|SYSMON_'; then
+          extraction_tools+=("Malware download/dropper tracking (SysMon analysis)")
+        elif echo "$tool" | grep -qiE 'AI_MODEL_|MALICIOUS_MODEL'; then
+          extraction_tools+=("AI model forensics (PyTorch/Pickle RCE detection)")
+        else
+          extraction_tools+=("$tool")
+        fi
+      done
+
+      # Tampilkan decode methods
+      if [[ ${#decode_methods[@]} -gt 0 ]]; then
+        echo -e "    ${C}🔓 Decode Methods:${NC}"
+        for method in "${decode_methods[@]}"; do
+          echo -e "      ${G}→${NC} $method"
+        done
+      fi
+
+      # Tampilkan extraction tools
+      if [[ ${#extraction_tools[@]} -gt 0 ]]; then
+        # Deduplicate tools
+        local unique_tools=()
+        for t in "${extraction_tools[@]}"; do
+          local dup=false
+          for ut in "${unique_tools[@]}"; do
+            [[ "$ut" == "$t" ]] && dup=true && break
+          done
+          [[ "$dup" == false ]] && unique_tools+=("$t")
+        done
+
+        echo -e "    ${M}🛠️  Tools/Analysis:${NC}"
+        for t in "${unique_tools[@]}"; do
+          echo -e "      ${G}→${NC} $t"
+        done
+      fi
+
+      # Writeup template suggestion
+      echo ""
+      echo -e "    ${DIM}💡 Writeup suggestion:${NC}"
+      echo -e "    ${DIM}\"Flag ${flag} ditemukan dengan menggunakan:${NC}"
+      if [[ ${#decode_methods[@]} -gt 0 ]]; then
+        echo -e "    ${DIM}  - ${decode_methods[*]}${NC}"
+      fi
+      if [[ ${#extraction_tools[@]} -gt 0 ]]; then
+        echo -e "    ${DIM}  - ${extraction_tools[*]}${NC}"
+      fi
+      echo -e "    ${DIM}\"${NC}"
+      echo ""
+      divider
+    done
+
+    # Tampilkan pesan jika tidak ada flag yang match dengan filter
+    if [[ ${#unique_flags[@]} -eq 0 ]]; then
+      if [[ -n "$FLAG_FILTER" ]]; then
+        echo -e "  ${DIM}(Tidak ada flag yang match dengan filter: $FLAG_FILTER)${NC}"
+      else
+        echo -e "  ${DIM}(Tidak ada flag dengan tools/methods info)${NC}"
+      fi
+    fi
+
+    # Simpan ke report
+    log_report "WRITEUP_HELPER_START"
+    for flag in "${unique_flags[@]}"; do
+      local tools_for_flag=""
+      for entry in "${FLAG_TOOLS_MAP[@]}"; do
+        local e_flag e_tool
+        e_flag=$(echo "$entry" | cut -d'|' -f1)
+        e_tool=$(echo "$entry" | cut -d'|' -f2-)
+        [[ "$e_flag" == "$flag" ]] && tools_for_flag+="$e_tool; "
+      done
+      log_report "WRITEUP_FLAG: $flag → Tools: $tools_for_flag"
+    done
+  fi
+
+  # ════════════════════════════════════════════════════════════
+  #  SAVE FULL REPORT — readable copy of entire scan output
+  # ════════════════════════════════════════════════════════════
+  if [[ -f "$REPORT_FILE" ]]; then
+    # Buat versi readable dari report (strip ANSI color codes)
+    local readable_report="${REPORT_FILE%.txt}_READABLE.txt"
+    sed 's/\x1b\[[0-9;]*m//g' "$REPORT_FILE" > "$readable_report" 2>/dev/null
+
+    # Tambahkan ringkasan decode hits di akhir report
+    {
+      echo ""
+      echo "═══════════════════════════════════════════════"
+      echo "  FULL DECODE & CHAIN SOLVER RESULTS"
+      echo "═══════════════════════════════════════════════"
+      echo ""
+      echo "Semua flag dan decode hits yang ditemukan selama scan:"
+      echo ""
+      # FLAG_CONFIRMED dari chain solver
+      grep -E "^FLAG_CONFIRMED:" "$REPORT_FILE" 2>/dev/null | while IFS= read -r line; do
+        echo "  ★ CONFIRMED: ${line#FLAG_CONFIRMED: }"
+      done
+      echo ""
+      # DECODE_HITs
+      grep -E "^DECODE_HIT:" "$REPORT_FILE" 2>/dev/null | while IFS= read -r line; do
+        echo "  ✔ ${line#DECODE_HIT: }"
+      done
+      echo ""
+      # CHAIN solver results
+      grep -E "^CHAIN_SOLVER:|^CHAIN:" "$REPORT_FILE" 2>/dev/null | while IFS= read -r line; do
+        echo "  🔗 ${line#*: }"
+      done
+      echo ""
+      # FLAG_CAESAR
+      grep -E "^FLAG_CAESAR:" "$REPORT_FILE" 2>/dev/null | while IFS= read -r line; do
+        echo "  🔑 ${line#FLAG_CAESAR: }"
+      done
+      echo ""
+      echo "═══════════════════════════════════════════════"
+      echo "  Report Location:"
+      echo "═══════════════════════════════════════════════"
+      echo "  Full report (with colors): $REPORT_FILE"
+      echo "  Readable version:          $readable_report"
+      echo "  Session folder:            $(dirname "$REPORT_FILE")"
+      echo ""
+      echo "Tips untuk membaca kembali:"
+      echo "  cat \"$readable_report\"          # Baca versi tanpa warna"
+      echo "  less \"$REPORT_FILE\"            # Baca versi asli (dengan ANSI)"
+      echo "  grep -E 'FLAG|CONFIRMED|CHAIN' \"$readable_report\"  # Cari flag saja"
+    } >> "$REPORT_FILE"
+
+    # Juga buat file summary terpisah yang mudah dibaca
+    local summary_file="$(dirname "$REPORT_FILE")/$(basename "$REPORT_FILE" .txt)_SUMMARY.txt"
+    {
+      echo "═══════════════════════════════════════════════"
+      echo "  FASFO SCAN SUMMARY — $TARGET"
+      echo "═══════════════════════════════════════════════"
+      echo "  Time:    $(date '+%Y-%m-%d %H:%M:%S')"
+      echo "  Target:  $TARGET"
+      echo "  Report:  $REPORT_FILE"
+      echo ""
+      echo "── FLAG CANDIDATES ──"
+      grep -E "FLAG_CONFIRMED:|FLAG_CAESAR:|FLAG_VIGENERE:|DECODE_HIT:|CHAIN:" "$REPORT_FILE" 2>/dev/null | \
+        sed 's/^FLAG_CONFIRMED: /★ /; s/^DECODE_HIT: /✔ /; s/^FLAG_CAESAR: /🔑 /; s/^CHAIN: /🔗 /'
+      echo ""
+      echo "── ALL FINDINGS ──"
+      grep -vE '^MODULE:|^TARGET:|^TIME:|^---$' "$REPORT_FILE" 2>/dev/null | grep -E 'FLAG|FOUND|HIT|CONFIRMED|CHAIN|DECODE'
+      
+      if [[ -n "$TARGET_KEYWORDS" ]]; then
+        echo ""
+        echo "── TARGETED SEARCH RESULTS ──"
+        grep "^TARGET_SEARCH_" "$REPORT_FILE" 2>/dev/null | sed 's/^TARGET_SEARCH_[^:]*://'
+      fi
+    } > "$summary_file" 2>/dev/null
+
+    echo -e "  ${W}📄 Full report saved:${NC} $REPORT_FILE"
+    echo -e "  ${W}📄 Readable version:${NC} $readable_report"
+    echo -e "  ${W}📄 Quick summary:${NC} $summary_file"
+  fi
 }
 
 # ─────────────────────────────────────────
@@ -7490,6 +8777,1314 @@ mod_windows_artifacts() {
 }
 
 # ─────────────────────────────────────────
+#  MODULE 16 — BINARY EXPLOITATION (PWN)
+# ─────────────────────────────────────────
+mod_binary_exploitation() {
+  section "Binary Exploitation Analysis"
+  local target="$1"
+  local ftype
+  ftype=$(file --brief "$target" 2>/dev/null)
+  local fname
+  fname=$(basename "$target")
+
+  info "Target: ${BOLD}$fname${NC} ${DIM}($ftype)${NC}"
+
+  # Auto-detect binary type
+  local is_elf=false is_pe=false is_64=false is_32=false is_stripped=false
+  if echo "$ftype" | grep -qi "ELF"; then
+    is_elf=true
+    echo -e "  ${G}[✔]${NC} Binary type: ${W}ELF (Linux/Unix)${NC}"
+    log_report "BINARY_TYPE: ELF"
+  elif echo "$ftype" | grep -qi "PE32\|PE32+\|MS-DOS\|Windows"; then
+    is_pe=true
+    echo -e "  ${G}[✔]${NC} Binary type: ${W}PE (Windows)${NC}"
+    log_report "BINARY_TYPE: PE"
+  elif echo "$ftype" | grep -qi "Mach-O"; then
+    echo -e "  ${Y}[!]${NC} Binary type: ${W}Mach-O (macOS)${NC} — limited support"
+    log_report "BINARY_TYPE: Mach-O"
+  fi
+
+  if [[ "$is_elf" == false && "$is_pe" == false ]]; then
+    warn "File bukan binary executable ELF/PE standar"
+    info "Menjalankan analisis file dasar sebagai fallback..."
+    mod_file_analysis "$target"
+    return
+  fi
+
+  # Detect architecture
+  if [[ "$is_elf" == true ]]; then
+    if echo "$ftype" | grep -q "64-bit"; then
+      is_64=true
+      echo -e "  ${G}[✔]${NC} Architecture: ${W}64-bit (x86_64)${NC}"
+      log_report "BINARY_ARCH: 64-bit"
+    elif echo "$ftype" | grep -q "32-bit"; then
+      is_32=true
+      echo -e "  ${Y}[!]${NC} Architecture: ${W}32-bit (x86)${NC}"
+      log_report "BINARY_ARCH: 32-bit"
+    fi
+    if echo "$ftype" | grep -qi "stripped"; then
+      is_stripped=true
+      echo -e "  ${Y}[!]${NC} Symbols: ${W}STRIPPED${NC} ${DIM}(reverse engineering required)${NC}"
+      log_report "BINARY_SYMBOLS: Stripped"
+    else
+      echo -e "  ${G}[✔]${NC} Symbols: ${W}NOT STRIPPED${NC} ${DIM}(debugging info available)${NC}"
+      log_report "BINARY_SYMBOLS: Not Stripped"
+    fi
+  fi
+
+  divider
+
+  # ═══════════════════════════════════════════════
+  #  SUB-MODULE 1: BUFFER OVERFLOW ANALYSIS
+  # ═══════════════════════════════════════════════
+  divider
+  info "Buffer Overflow Analysis"
+
+  # Check for dangerous functions
+  local dangerous_funcs=()
+  if [[ "$is_elf" == true ]] && has objdump; then
+    # Get all symbols and imports
+    local symbols
+    symbols=$(objdump -t "$target" 2>/dev/null | grep -iE 'FUNC|UND')
+    local imports
+    imports=$(objdump -T "$target" 2>/dev/null | grep -iE 'UND')
+
+    # Buffer overflow prone functions
+    local bof_funcs=("gets" "strcpy" "strcat" "sprintf" "vsprintf" "scanf" "gets_s" "memcpy" "memmove")
+    for func in "${bof_funcs[@]}"; do
+      if echo "$symbols $imports" | grep -qi "$func"; then
+        dangerous_funcs+=("$func")
+        found "⚠️  Dangerous function found: ${R}$func${NC} ${DIM}(buffer overflow prone)${NC}"
+        log_report "BOF_DANGEROUS_FUNC: $func"
+      fi
+    done
+
+    # Check for stack canary references
+    if echo "$symbols $imports" | grep -qi "__stack_chk_fail\|__stack_chk_guard"; then
+      ok "Stack canary detected (__stack_chk_fail)"
+      log_report "BOF_STACK_CANARY: Detected"
+    else
+      warn "No stack canary protection detected — vulnerable to stack-based overflow"
+      log_report "BOF_STACK_CANARY: Not Detected"
+    fi
+
+    # Check for buffer-related patterns in strings
+    local buf_patterns
+    buf_patterns=$(strings "$target" 2>/dev/null | grep -iE 'buffer|overflow|strcpy|memcpy|padding|input|name|pass' | head -10)
+    if [[ -n "$buf_patterns" ]]; then
+      info "Buffer-related string patterns:"
+      echo "$buf_patterns" | sed 's/^/    /'
+      log_report "BOF_STRING_PATTERNS: $buf_patterns"
+    fi
+
+  elif [[ "$is_pe" == true ]]; then
+    # PE file analysis
+    local pe_imports
+    pe_imports=$(objdump -p "$target" 2>/dev/null | grep -i "DLL Name\|Hint/Name")
+    local pe_funcs=("gets" "strcpy" "strcat" "sprintf" "wsprintf" "_gets" "_strcpy")
+    for func in "${pe_funcs[@]}"; do
+      if echo "$pe_imports" | grep -qi "$func"; then
+        dangerous_funcs+=("$func")
+        found "⚠️  Dangerous function: ${R}$func${NC}"
+        log_report "BOF_DANGEROUS_FUNC: $func"
+      fi
+    done
+  fi
+
+  if [[ ${#dangerous_funcs[@]} -eq 0 ]]; then
+    ok "No obvious buffer overflow-prone functions detected"
+  else
+    warn "Found ${#dangerous_funcs[@]} potentially dangerous function(s)"
+  fi
+
+  # Pattern creation suggestion for CTF
+  if [[ "$is_64" == true ]]; then
+    info "Buffer overflow testing commands:"
+    echo -e "    ${DIM}# Create pattern: pattern create 100${NC}"
+    echo -e "    ${DIM}# Find offset: pattern search \$rsp${NC}"
+    echo -e "    ${DIM}# GDB PEDA: gdb -q ./binary${NC}"
+    echo -e "    ${DIM}# Checksec: checksec --file=$fname${NC}"
+  elif [[ "$is_32" == true ]]; then
+    info "Buffer overflow testing commands:"
+    echo -e "    ${DIM}# Create pattern: pattern create 100${NC}"
+    echo -e "    ${DIM}# Find offset: pattern search \$eip${NC}"
+    echo -e "    ${DIM}# GDB PEDA: gdb -q ./binary${NC}"
+    echo -e "    ${DIM}# Checksec: checksec --file=$fname${NC}"
+  fi
+
+  divider
+
+  # ═══════════════════════════════════════════════
+  #  SUB-MODULE 2: INTEGER OVERFLOW / UNDERFLOW
+  # ═══════════════════════════════════════════════
+  divider
+  info "Integer Overflow / Underflow Analysis"
+
+  if [[ "$is_elf" == true ]] && has objdump; then
+    # Look for integer-related dangerous patterns
+    local int_dangerous=("malloc\|calloc\|realloc" "sizeof" "int " "unsigned " "size_t" "long ")
+    local int_vuln_patterns=()
+
+    # Check for multiplication that could overflow
+    local disasm
+    disasm=$(objdump -d "$target" 2>/dev/null)
+
+    # Look for comparison patterns (potential integer checks)
+    local cmp_count
+    cmp_count=$(echo "$disasm" | grep -c "cmp\|test" 2>/dev/null)
+    info "Comparison instructions found: $cmp_count"
+
+    # Look for multiplication/division (potential overflow sources)
+    local mul_count
+    mul_count=$(echo "$disasm" | grep -cE 'imul|mul|idiv|div' 2>/dev/null)
+    if [[ "$mul_count" -gt 0 ]]; then
+      info "Multiplication/Division instructions: $mul_count ${DIM}(potential integer overflow sources)${NC}"
+      log_report "INT_MATH_OPS: $mul_count mul/div instructions"
+    fi
+
+    # Check for calloc/malloc with multiplication patterns
+    local alloc_calls
+    alloc_calls=$(objdump -T "$target" 2>/dev/null | grep -iE 'malloc|calloc|realloc')
+    if [[ -n "$alloc_calls" ]]; then
+      info "Memory allocation functions:"
+      echo "$alloc_calls" | sed 's/^/    /'
+      log_report "INT_ALLOC_FUNCS: $alloc_calls"
+
+      # Check if calloc is used (safer than malloc for multiplication)
+      if echo "$alloc_calls" | grep -q "calloc"; then
+        ok "calloc detected — safer for multiplication-based allocations"
+      else
+        warn "No calloc usage detected — malloc with multiplication may be vulnerable to integer overflow"
+      fi
+    fi
+
+    # String patterns for integer vulnerabilities
+    local int_strings
+    int_strings=$(strings "$target" 2>/dev/null | grep -iE 'size|length|count|number|amount|max|min|limit|overflow' | head -10)
+    if [[ -n "$int_strings" ]]; then
+      info "Integer-related string patterns:"
+      echo "$int_strings" | sed 's/^/    /'
+      log_report "INT_STRING_PATTERNS: $int_strings"
+    fi
+  fi
+
+  divider
+
+  # ═══════════════════════════════════════════════
+  #  SUB-MODULE 3: SHELLCODE ANALYSIS
+  # ═══════════════════════════════════════════════
+  divider
+  info "Shellcode Detection & Analysis"
+
+  # Common shellcode patterns
+  local shellcode_patterns=()
+
+  # NOP sled detection (0x90 bytes)
+  if has xxd; then
+    local nop_count
+    nop_count=$(xxd "$target" 2>/dev/null | grep -c "9090 9090\|90 90 90 90\|90909090" 2>/dev/null)
+    if [[ "$nop_count" -gt 0 ]]; then
+      found "NOP sled pattern detected ($nop_count occurrences) — possible shellcode location"
+      log_report "SHELLCODE_NOP_SLED: $nop_count occurrences"
+
+      # Show locations
+      local nop_locations
+      nop_locations=$(xxd "$target" 2>/dev/null | grep "9090 9090\|90 90 90 90" | head -5)
+      echo "$nop_locations" | sed 's/^/    /'
+    fi
+  fi
+
+  # Common shellcode strings
+  local sc_strings
+  sc_strings=$(strings "$target" 2>/dev/null | grep -iE '/bin/sh|/bin/bash|execve|system\(|shell|/tmp/|chmod|nc -e|ncat|reverse|bind' | head -10)
+  if [[ -n "$sc_strings" ]]; then
+    found "Shellcode-related strings detected:"
+    echo "$sc_strings" | sed 's/^/    /'
+    log_report "SHELLCODE_STRINGS: $sc_strings"
+  fi
+
+  # Syscall detection (Linux)
+  if [[ "$is_elf" == true ]] && has objdump; then
+    local syscalls
+    syscalls=$(objdump -d "$target" 2>/dev/null | grep -E "syscall|sysenter|int *0x80" | head -10)
+    if [[ -n "$syscalls" ]]; then
+      info "Syscall instructions detected:"
+      echo "$syscalls" | sed 's/^/    /'
+      log_report "SHELLCODE_SYSCALLS: $syscalls"
+    fi
+
+    # Check for execve (common in shellcode)
+    local execve_count
+    execve_count=$(objdump -T "$target" 2>/dev/null | grep -c "execve" 2>/dev/null)
+    if [[ "$execve_count" -gt 0 ]]; then
+      found "execve() function detected — common in shellcode exploitation"
+      log_report "SHELLCODE_EXECVE: Detected"
+    fi
+  fi
+
+  # Shellcode size estimation
+  local binary_size
+  binary_size=$(stat -f%z "$target" 2>/dev/null || stat -c%s "$target" 2>/dev/null)
+  info "Binary size: $binary_size bytes"
+
+  divider
+
+  # ═══════════════════════════════════════════════
+  #  SUB-MODULE 4: FORMAT STRING VULNERABILITY
+  # ═══════════════════════════════════════════════
+  divider
+  info "Format String Vulnerability Analysis"
+
+  if [[ "$is_elf" == true ]] && has objdump; then
+    # Check for printf family functions
+    local format_funcs=("printf" "sprintf" "fprintf" "snprintf" "vprintf" "vsprintf" "vfprintf")
+    local format_found=()
+
+    local all_symbols
+    all_symbols=$(objdump -T "$target" 2>/dev/null)
+
+    for func in "${format_funcs[@]}"; do
+      if echo "$all_symbols" | grep -q "$func"; then
+        format_found+=("$func")
+      fi
+    done
+
+    if [[ ${#format_found[@]} -gt 0 ]]; then
+      info "Format string functions detected:"
+      for func in "${format_found[@]}"; do
+        echo -e "    ${Y}•${NC} $func"
+        log_report "FORMAT_FUNC: $func"
+      done
+
+      # Check for dangerous usage patterns in disassembly
+      local disasm
+      disasm=$(objdump -d "$target" 2>/dev/null)
+
+      # Look for format specifiers in strings
+      local fmt_specifiers
+      fmt_specifiers=$(strings "$target" 2>/dev/null | grep -E '%[0-9]*[xnpusldi]' | head -10)
+      if [[ -n "$fmt_specifiers" ]]; then
+        found "Format specifiers found in strings:"
+        echo "$fmt_specifiers" | sed 's/^/    /'
+        log_report "FORMAT_SPECIFIERS: $fmt_specifiers"
+
+        # Check for %n (write primitive — most dangerous)
+        if echo "$fmt_specifiers" | grep -q "%n"; then
+          found "⚠️  %n format specifier detected — ${R}WRITE PRIMITIVE${NC} — critical vulnerability"
+          log_report "FORMAT_PERCENT_N: CRITICAL"
+        fi
+      fi
+
+      # Check for usage patterns where user input goes directly to printf
+      info "Format string exploitation hints:"
+      echo -e "    ${DIM}# Test: ./binary AAAA%x.%x.%x.%x${NC}"
+      echo -e "    ${DIM}# Crash test: ./binary %x%x%x%x%x%x%x%x${NC}"
+      echo -e "    ${DIM}# Read memory: ./binary %p.%p.%p.%p.%p${NC}"
+      echo -e "    ${DIM}# Write primitive: ./binary %n (if applicable)${NC}"
+    else
+      ok "No format string functions detected"
+    fi
+  fi
+
+  divider
+
+  # ═══════════════════════════════════════════════
+  #  SUB-MODULE 5: ROP CHAIN ANALYSIS
+  # ═══════════════════════════════════════════════
+  divider
+  info "ROP Chain Analysis (ret2libc, ret2win, etc)"
+
+  if [[ "$is_elf" == true ]]; then
+    # Try ROPgadget
+    if command -v ROPgadget &>/dev/null; then
+      ok "ROPgadget found — analyzing binary..."
+      local rop_output
+      rop_output=$(ROPgadget --binary "$target" 2>/dev/null)
+
+      local gadget_count
+      gadget_count=$(echo "$rop_output" | wc -l)
+      found "Total ROP gadgets found: ${W}$gadget_count${NC}"
+      log_report "ROP_GADGET_COUNT: $gadget_count"
+
+      # Show interesting gadgets
+      local interesting_gadgets
+      interesting_gadgets=$(echo "$rop_output" | grep -iE 'pop.*ret|pop.*pop.*ret|syscall|int 0x80' | head -15)
+      if [[ -n "$interesting_gadgets" ]]; then
+        info "Interesting ROP gadgets (first 15):"
+        echo "$interesting_gadgets" | sed 's/^/    /'
+        log_report "ROP_INTERESTING_GADGETS: $interesting_gadgets"
+      fi
+
+      # Check for ret2win gadgets
+      local win_functions
+      win_functions=$(objdump -t "$target" 2>/dev/null | grep -iE 'win|flag|system|execve|shell|get_flag' | head -10)
+      if [[ -n "$win_functions" ]]; then
+        found "Potential ret2win functions:"
+        echo "$win_functions" | sed 's/^/    /'
+        log_report "ROP_WIN_FUNCTIONS: $win_functions"
+      fi
+
+    elif command -v ropper &>/dev/null; then
+      ok "ropper found — analyzing binary..."
+      local ropper_output
+      ropper_output=$(ropper --file "$target" 2>/dev/null)
+      local gadget_count
+      gadget_count=$(echo "$ropper_output" | wc -l)
+      found "Total gadgets found: $gadget_count"
+      log_report "ROP_GADGETS_ROPPER: $gadget_count"
+    else
+      warn "ROPgadget/ropper not found — using basic analysis"
+      info "Install: ${DIM}pip install ropgadget${NC} or ${DIM}sudo apt install ropper${NC}"
+    fi
+
+    # Basic ROP analysis without tools
+    local libc_functions
+    libc_functions=$(objdump -T "$target" 2>/dev/null | grep -iE 'system|execve|puts|printf|gets|read|write' | head -10)
+    if [[ -n "$libc_functions" ]]; then
+      info "PLT/GOT functions for ret2libc:"
+      echo "$libc_functions" | sed 's/^/    /'
+      log_report "ROP_LIBC_FUNCTIONS: $libc_functions"
+
+      # Check for system() specifically
+      if echo "$libc_functions" | grep -q "system"; then
+        found "system() found — ret2libc attack possible"
+        log_report "ROP_SYSTEM_FUNCTION: Detected"
+
+        # Look for /bin/sh string
+        local bin_sh
+        bin_sh=$(strings "$target" 2>/dev/null | grep "/bin/sh")
+        if [[ -n "$bin_sh" ]]; then
+          found "⚠️  /bin/sh string found — ret2libc chain: system('/bin/sh')"
+          log_report "ROP_BIN_SH: CRITICAL - system('/bin/sh') chain possible"
+        else
+          info "No /bin/sh string found — need to inject or find in libc"
+        fi
+      fi
+    fi
+
+    # POP RET gadgets (basic search)
+    if has objdump; then
+      local disasm
+      disasm=$(objdump -d "$target" 2>/dev/null)
+      local pop_ret_count
+      pop_ret_count=$(echo "$disasm" | grep -c "pop.*ret" 2>/dev/null)
+      info "Basic pop;ret gadgets found: $pop_ret_count"
+      log_report "ROP_POP_RET_COUNT: $pop_ret_count"
+
+      if [[ "$is_64" == true ]]; then
+        info "For 64-bit ROP chain, look for:"
+        echo -e "    ${DIM}# pop rdi; ret  (1st argument)${NC}"
+        echo -e "    ${DIM}# pop rsi; ret  (2nd argument)${NC}"
+        echo -e "    ${DIM}# pop rdx; ret  (3rd argument)${NC}"
+
+        # Search for specific gadgets
+        local pop_rdi
+        pop_rdi=$(echo "$disasm" | grep -A1 "pop.*rdi" | grep "ret" | head -3)
+        if [[ -n "$pop_rdi" ]]; then
+          found "pop rdi; ret gadget found"
+          echo "$pop_rdi" | sed 's/^/    /'
+        fi
+      elif [[ "$is_32" == true ]]; then
+        info "For 32-bit ROP chain, arguments are on stack"
+        echo -e "    ${DIM}# Direct call: system@got -> arg1 -> arg2 -> arg3${NC}"
+      fi
+    fi
+
+    # one_gadget detection
+    if command -v one_gadget &>/dev/null; then
+      ok "one_gadget found — searching for one-gadget RCEs..."
+      local one_gadgets
+      one_gadgets=$(one_gadget "$target" 2>/dev/null | head -10)
+      if [[ -n "$one_gadgets" ]]; then
+        found "One-gadget RCE candidates:"
+        echo "$one_gadgets" | sed 's/^/    /'
+        log_report "ROP_ONE_GADGET: $one_gadgets"
+      fi
+    fi
+  fi
+
+  divider
+
+  # ═══════════════════════════════════════════════
+  #  SUB-MODULE 6: TYPE CONFUSION
+  # ═══════════════════════════════════════════════
+  divider
+  info "Type Confusion Analysis"
+
+  if [[ "$is_elf" == true ]] && has objdump; then
+    # Check for C++ demangled symbols (indicates OOP)
+    local cpp_symbols
+    cpp_symbols=$(objdump -t "$target" 2>/dev/null | grep -E '_ZN|_ZTV|_ZTI' | head -10)
+    if [[ -n "$cpp_symbols" ]]; then
+      found "C++ symbols detected — type confusion possible"
+      log_report "TYPE_CONFUSION_CPP: C++ symbols found"
+
+      # Look for virtual tables
+      local vtable_count
+      vtable_count=$(objdump -t "$target" 2>/dev/null | grep -c "vtable" 2>/dev/null)
+      if [[ "$vtable_count" -gt 0 ]]; then
+        found "Virtual tables found ($vtable_count) — potential for type confusion via vtable corruption"
+        log_report "TYPE_CONFUSION_VTABLE: $vtable_count vtables"
+      fi
+
+      # Look for dynamic_cast (type checking)
+      local dynamic_cast
+      dynamic_cast=$(objdump -T "$target" 2>/dev/null | grep -i "dynamic_cast")
+      if [[ -n "$dynamic_cast" ]]; then
+        ok "dynamic_cast detected — some type safety present"
+      else
+        warn "No dynamic_cast detected — potential type confusion risk"
+      fi
+
+      # Show some C++ symbols
+      info "Sample C++ symbols:"
+      echo "$cpp_symbols" | head -5 | sed 's/^/    /'
+
+      # Demangle if c++filt available
+      if has c++filt; then
+        info "Demangled symbols:"
+        echo "$cpp_symbols" | head -5 | c++filt 2>/dev/null | sed 's/^/    /'
+        log_report "TYPE_CONFUSION_DEMANGLED: $(echo "$cpp_symbols" | head -5 | c++filt)"
+      fi
+    else
+      ok "No C++ symbols detected — type confusion less likely"
+    fi
+
+    # Check for RTTI (Runtime Type Information)
+    local rtti
+    rtti=$(objdump -s -j .gcc_except_table "$target" 2>/dev/null | head -5)
+    if [[ -n "$rtti" ]]; then
+      info "RTTI/EH data detected:"
+      echo "$rtti" | sed 's/^/    /'
+    fi
+  fi
+
+  divider
+
+  # ═══════════════════════════════════════════════
+  #  SUB-MODULE 7: UNINITIALIZED MEMORY USE
+  # ═══════════════════════════════════════════════
+  divider
+  info "Uninitialized Memory Use Analysis"
+
+  if [[ "$is_elf" == true ]] && has objdump; then
+    # Check for uninitialized data sections
+    local bss_section
+    bss_section=$(objdump -h "$target" 2>/dev/null | grep -i "bss")
+    if [[ -n "$bss_section" ]]; then
+      info ".bss section (uninitialized global variables):"
+      echo "$bss_section" | sed 's/^/    /'
+      log_report "UNINIT_BSS: $bss_section"
+
+      local bss_size
+      bss_size=$(echo "$bss_section" | awk '{print $3}')
+      info "BSS section size: $bss_size bytes"
+    fi
+
+    # Look for stack variables that might be uninitialized
+    local disasm
+    disasm=$(objdump -d "$target" 2>/dev/null)
+
+    # Check for use-before-init patterns (basic heuristic)
+    local alloca_count
+    alloca_count=$(objdump -T "$target" 2>/dev/null | grep -c "alloca" 2>/dev/null)
+    if [[ "$alloca_count" -gt 0 ]]; then
+      warn "alloca() usage detected — potential uninitialized memory issues"
+      log_report "UNINIT_ALLOCA: $alloca_count uses"
+    fi
+
+    # Check for malloc without initialization
+    local malloc_count
+    malloc_count=$(objdump -T "$target" 2>/dev/null | grep -c "malloc" 2>/dev/null)
+    local calloc_count
+    calloc_count=$(objdump -T "$target" 2>/dev/null | grep -c "calloc" 2>/dev/null)
+
+    if [[ "$malloc_count" -gt 0 && "$calloc_count" -eq 0 ]]; then
+      warn "malloc() used without calloc() — memory may be uninitialized"
+      log_report "UNINIT_MALLOC: $malloc_count malloc, 0 calloc"
+    elif [[ "$malloc_count" -gt 0 ]]; then
+      ok "Both malloc() and calloc() present — safer memory allocation"
+    fi
+
+    # Check for local variable patterns
+    local local_var_patterns
+    local_var_patterns=$(echo "$disasm" | grep -E "sub.*rsp|sub.*esp" | head -5)
+    if [[ -n "$local_var_patterns" ]]; then
+      info "Stack frame allocations:"
+      echo "$local_var_patterns" | sed 's/^/    /'
+      log_report "UNINIT_STACK_ALLOC: $local_var_patterns"
+    fi
+  fi
+
+  divider
+
+  # ═══════════════════════════════════════════════
+  #  SUB-MODULE 8: BYPASS PROTECTION ANALYSIS
+  # ═══════════════════════════════════════════════
+  divider
+  info "Protection Mechanism Analysis (PIE, CANARY, NX, RELRO)"
+
+  # Run checksec if available
+  if command -v checksec &>/dev/null; then
+    ok "checksec found — running full protection analysis..."
+    local checksec_out
+    checksec_out=$(checksec --file="$target" 2>/dev/null)
+    echo "$checksec_out" | sed 's/^/    /'
+    log_report "CHECKSEC: $checksec_out"
+
+    # Parse protections
+    local protections_raw
+    protections_raw=$(checksec --output=json --file="$target" 2>/dev/null)
+    if [[ -n "$protections_raw" ]]; then
+      log_report "CHECKSEC_JSON: $protections_raw"
+    fi
+
+  else
+    info "checksec not found — using manual analysis..."
+    info "Install: ${DIM}sudo apt install checksec${NC} or ${DIM}pip install checksec${NC}"
+
+    # Manual protection checks for ELF
+    if [[ "$is_elf" == true ]] && has readelf; then
+      local elf_headers
+      elf_headers=$(readelf -l "$target" 2>/dev/null)
+      local dynamic_section
+      dynamic_section=$(readelf -d "$target" 2>/dev/null)
+
+      # ══ PIE (Position Independent Executable) ══
+      if echo "$elf_headers" | grep -q "DYN"; then
+        found "PIE: ${G}ENABLED${NC} ${DIM}(Position Independent Executable)${NC}"
+        log_report "PROT_PIE: Enabled"
+      else
+        warn "PIE: ${R}DISABLED${NC} ${DIM}(fixed addresses — ASLR bypass possible)${NC}"
+        log_report "PROT_PIE: Disabled"
+      fi
+
+      # ══ CANARY (Stack Cookie) ══
+      local canary_symbols
+      canary_symbols=$(objdump -T "$target" 2>/dev/null | grep "__stack_chk_fail")
+      if [[ -n "$canary_symbols" ]]; then
+        found "CANARY: ${G}ENABLED${NC} ${DIM}(Stack buffer overflow protection)${NC}"
+        log_report "PROT_CANARY: Enabled"
+      else
+        warn "CANARY: ${R}DISABLED${NC} ${DIM}(Stack buffer overflow possible)${NC}"
+        log_report "PROT_CANARY: Disabled"
+      fi
+
+      # ══ NX (No-Execute / DEP) ══
+      if echo "$elf_headers" | grep -q "GNU_STACK" && echo "$elf_headers" | grep "GNU_STACK" | grep -q "RWE"; then
+        warn "NX: ${R}DISABLED${NC} ${DIM}(Executable stack — shellcode injection possible)${NC}"
+        log_report "PROT_NX: Disabled"
+      elif echo "$elf_headers" | grep -q "GNU_STACK"; then
+        found "NX: ${G}ENABLED${NC} ${DIM}(Non-executable stack)${NC}"
+        log_report "PROT_NX: Enabled"
+      else
+        info "NX: ${Y}UNKNOWN${NC} ${DIM}(No GNU_STACK found)${NC}"
+        log_report "PROT_NX: Unknown"
+      fi
+
+      # ══ RELRO (Relocation Read-Only) ══
+      if echo "$dynamic_section" | grep -q "BIND_NOW"; then
+        found "RELRO: ${G}FULL RELRO${NC} ${DIM}(GOT overwrite protection)${NC}"
+        log_report "PROT_RELRO: Full"
+      elif echo "$elf_headers" | grep -q "GNU_RELRO"; then
+        warn "RELRO: ${Y}PARTIAL RELRO${NC} ${DIM}(Partial GOT protection)${NC}"
+        log_report "PROT_RELRO: Partial"
+      else
+        warn "RELRO: ${R}DISABLED${NC} ${DIM}(GOT overwrite possible)${NC}"
+        log_report "PROT_RELRO: Disabled"
+      fi
+    fi
+  fi
+
+  divider
+
+  # ═══════════════════════════════════════════════
+  #  SUMMARY AND EXPLOITATION HINTS
+  # ═══════════════════════════════════════════════
+  section "Binary Exploitation Summary"
+
+  info "Exploitation Strategy:"
+  echo ""
+
+  # Determine best attack vector
+  local attack_vectors=()
+
+  if [[ "$is_elf" == true ]]; then
+    # Check for easiest targets
+    local pie_disabled=false canary_disabled=false nx_disabled=false
+
+    if ! echo "$(readelf -l "$target" 2>/dev/null)" | grep -q "DYN"; then
+      pie_disabled=true
+      attack_vectors+=("No PIE — Fixed address ROP/ret2win")
+    fi
+
+    if ! objdump -T "$target" 2>/dev/null | grep -q "__stack_chk_fail"; then
+      canary_disabled=true
+      attack_vectors+=("No Canary — Stack buffer overflow possible")
+    fi
+
+    if readelf -l "$target" 2>/dev/null | grep "GNU_STACK" | grep -q "RWE"; then
+      nx_disabled=true
+      attack_vectors+=("No NX — Shellcode injection on stack")
+    fi
+
+    # Print attack vectors
+    if [[ ${#attack_vectors[@]} -gt 0 ]]; then
+      found "Best attack vectors:"
+      for vec in "${attack_vectors[@]}"; do
+        echo -e "    ${G}→${NC} $vec"
+        log_report "EXPLOIT_VECTOR: $vec"
+      done
+    else
+      info "All protections enabled — advanced techniques needed:"
+      echo -e "    ${DIM}• Partial RELRO + PIE: Info leak → ASLR bypass → ROP${NC}"
+      echo -e "    ${DIM}• Full RELRO: GOT overwrite not possible, use ROP chain${NC}"
+      echo -e "    ${DIM}• Canary: Stack pivot or brute-force canary${NC}"
+    fi
+
+    # CTF hints
+    info "CTF Binary Exploitation Tips:"
+    echo -e "    ${Y}1.${NC} Check for hidden functions: ${DIM}objdump -t | grep -i 'win\|flag\|shell'${NC}"
+    echo -e "    ${Y}2.${NC} Try ret2win if simple functions exist"
+    echo -e "    ${Y}3.${NC} Build ROP chain for shell access"
+    echo -e "    ${Y}4.${NC} Leak addresses → bypass ASLR → chain to system()"
+    echo -e "    ${Y}5.${NC} Use pwntools for exploit development"
+
+    # Pwntools template
+    echo ""
+    info "Pwntools Template:"
+    cat << 'TEMPLATE'
+    ${DIM}from pwn import *
+
+    # Setup
+    context.binary = './binary'
+    p = process('./binary')
+    # p = remote('host', port)
+
+    # Exploit
+    payload = b'A' * offset
+    payload += p64(pop_rdi)
+    payload += p64(system_got)
+    payload += p64(system)
+    p.sendline(payload)
+    p.interactive()${NC}
+TEMPLATE
+  fi
+
+  # ═══════════════════════════════════════════════════
+  #  EKSTRAK FLAG DARI BINARY STRINGS & DECODE
+  # ═══════════════════════════════════════════════════
+  divider
+  info "Mencari flag dalam binary strings..."
+
+  local binary_flags
+  binary_flags=$(strings "$target" 2>/dev/null | grep -iE \
+    '(flag|CTF|picoCTF|DUCTF|HTF|THM|REDLIMIT|FTC|XGH|pico|ADB|ADBC)\{[^}]+\}' | head -20)
+
+  if [[ -n "$binary_flags" ]]; then
+    found "Flag candidates found in binary:"
+    echo "$binary_flags" | sed 's/^/    /'
+    log_report "BINARY_FLAGS: $binary_flags"
+
+    # Decode setiap flag yang ditemukan
+    while IFS= read -r flag; do
+      [[ ${#flag} -lt 4 ]] && continue
+      decode_string "$flag"
+    done <<< "$binary_flags"
+  else
+    info "No obvious flags found in binary strings"
+  fi
+
+  log_report "BINARY_EXPLOITATION_COMPLETE: Analysis finished"
+}
+
+# ─────────────────────────────────────────
+#  MODULE — WEB EXPLOITATION SCANNER
+# ─────────────────────────────────────────
+
+# Helper: Web vulnerability severity levels
+_web_severity() {
+  local level="$1"
+  case "$level" in
+    CRITICAL) echo -e "${R}${BOLD}[CRITICAL]${NC}" ;;
+    HIGH)     echo -e "${R}[HIGH]${NC}" ;;
+    MEDIUM)   echo -e "${Y}[MEDIUM]${NC}" ;;
+    LOW)      echo -e "${C}[LOW]${NC}" ;;
+    INFO)     echo -e "${B}[INFO]${NC}" ;;
+  esac
+}
+
+# Helper: Check if URL is valid
+_is_valid_url() {
+  local url="$1"
+  echo "$url" | grep -qE '^https?://[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}' && return 0
+  echo "$url" | grep -qE '^[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}(/.*)?$' && return 0
+  return 1
+}
+
+# Helper: Normalize URL (add http:// if missing)
+_normalize_url() {
+  local url="$1"
+  if ! echo "$url" | grep -qE '^https?://'; then
+    echo "http://$url"
+  else
+    echo "$url"
+  fi
+}
+
+# Helper: Extract base URL
+_get_base_url() {
+  local url="$1"
+  echo "$url" | sed 's|://.*||' 
+}
+
+# Helper: HTTP GET request with error handling
+_web_get() {
+  local url="$1"
+  local timeout="${2:-10}"
+  
+  if has curl; then
+    curl -s -L --max-time "$timeout" --insecure \
+      -H "User-Agent: Mozilla/5.0 FASFO Web Scanner" \
+      "$url" 2>/dev/null
+  else
+    echo "ERROR: curl not found"
+    return 1
+  fi
+}
+
+# Helper: HTTP GET with headers
+_web_get_headers() {
+  local url="$1"
+  local timeout="${2:-10}"
+  
+  if has curl; then
+    curl -s -L -I --max-time "$timeout" --insecure \
+      -H "User-Agent: Mozilla/5.0 FASFO Web Scanner" \
+      "$url" 2>/dev/null
+  else
+    echo "ERROR: curl not found"
+    return 1
+  fi
+}
+
+# Main Web Exploitation Module
+mod_web_exploitation() {
+  local target="$1"
+  
+  # Normalize target to URL
+  if _is_valid_url "$target"; then
+    target=$(_normalize_url "$target")
+  else
+    warn "Target bukan URL valid: $target"
+    info "Contoh URL valid: http://example.com atau example.com"
+    return 1
+  fi
+  
+  TARGET="$target"
+  section "Web Exploitation Analysis"
+  info "Target URL: ${BOLD}$target${NC}"
+  log_report "WEB_TARGET: $target"
+  log_report "WEB_SCAN_START: $(date)"
+  
+  divider
+  info "Memulai Web Exploitation Scanner..."
+  info "Scanner ini akan menguji berbagai vulnerability sesuai OWASP Top 10"
+  echo -e "  ${DIM}[Tekan Ctrl+C untuk skip ke test berikutnya]${NC}"
+  echo ""
+  
+  # ════════════════════════════════════════════════════
+  #  PHASE 0: INFORMATION GATHERING (Auto-run first)
+  # ════════════════════════════════════════════════════
+  section "Phase 0: Information Gathering"
+  
+  # 1. Technology Detection
+  info "Mendeteksi teknologi yang digunakan..."
+  local tech_info=""
+  if has whatweb; then
+    tech_info=$(whatweb --color=never "$target" 2>/dev/null | head -20)
+    if [[ -n "$tech_info" ]]; then
+      found "Technology stack detected:"
+      echo "$tech_info" | sed 's/^/    /'
+      log_report "WEB_TECHNOLOGY: $tech_info"
+    fi
+  else
+    info "whatweb not found — skipping technology detection"
+    info "Install: sudo apt install whatweb"
+  fi
+  
+  # Fallback: detect dari headers
+  info "Menganalisis HTTP headers..."
+  local headers
+  headers=$(_web_get_headers "$target")
+  if [[ -n "$headers" ]]; then
+    log_report "WEB_HEADERS_HTTP: $headers"
+    
+    # Server header
+    local server_header
+    server_header=$(echo "$headers" | grep -i "^Server:" | head -1)
+    if [[ -n "$server_header" ]]; then
+      found "Server: $server_header"
+      log_report "WEB_SERVER: $server_header"
+    fi
+    
+    # X-Powered-By
+    local powered_by
+    powered_by=$(echo "$headers" | grep -i "^X-Powered-By:" | head -1)
+    if [[ -n "$powered_by" ]]; then
+      found "X-Powered-By: $powered_by"
+      log_report "WEB_POWERED_BY: $powered_by"
+    fi
+  fi
+  
+  divider
+  
+  # 2. Security Headers Check
+  info "Memeriksa security headers..."
+  local missing_headers=()
+  
+  # Check Strict-Transport-Security
+  if ! echo "$headers" | grep -qi "strict-transport-security"; then
+    missing_headers+=("Strict-Transport-Security (HSTS)")
+  fi
+  
+  # Check X-Frame-Options
+  if ! echo "$headers" | grep -qi "x-frame-options"; then
+    missing_headers+=("X-Frame-Options (Clickjacking protection)")
+  fi
+  
+  # Check X-Content-Type-Options
+  if ! echo "$headers" | grep -qi "x-content-type-options"; then
+    missing_headers+=("X-Content-Type-Options")
+  fi
+  
+  # Check Content-Security-Policy
+  if ! echo "$headers" | grep -qi "content-security-policy"; then
+    missing_headers+=("Content-Security-Policy (CSP)")
+  fi
+  
+  # Check X-XSS-Protection
+  if ! echo "$headers" | grep -qi "x-xss-protection"; then
+    missing_headers+=("X-XSS-Protection")
+  fi
+  
+  if [[ ${#missing_headers[@]} -gt 0 ]]; then
+    warn "Missing security headers (${#missing_headers[@]}):"
+    for h in "${missing_headers[@]}"; do
+      echo -e "    ${Y}✗${NC} $h"
+      log_report "WEB_MISSING_HEADER: $h"
+    done
+  else
+    found "All major security headers present"
+  fi
+  
+  divider
+  
+  # 3. robots.txt check
+  info "Checking robots.txt..."
+  local base_url
+  base_url=$(echo "$target" | sed 's|/[^/]*$||' | sed 's|/$||')
+  local robots_txt
+  robots_txt=$(_web_get "$base_url/robots.txt" 5)
+  if echo "$robots_txt" | grep -qiE "^Disallow:"; then
+    found "robots.txt found with Disallow rules:"
+    echo "$robots_txt" | grep -i "^Disallow:" | sed 's/^/    /'
+    log_report "WEB_ROBOTS_TXT: Disallow rules found"
+  else
+    info "No robots.txt or no Disallow rules"
+  fi
+  
+  divider
+  
+  # ════════════════════════════════════════════════════
+  #  PHASE 1: INJECTION TESTS
+  # ════════════════════════════════════════════════════
+  section "Phase 1: Injection Tests"
+  
+  # 1. SQL Injection Detection
+  _web_sqli_test "$target"
+  
+  # 2. XSS Detection
+  _web_xss_test "$target"
+  
+  # 3. Command Injection
+  _web_cmdi_test "$target"
+  
+  divider
+  
+  # ════════════════════════════════════════════════════
+  #  PHASE 2: AUTHENTICATION & SESSION
+  # ════════════════════════════════════════════════════
+  section "Phase 2: Authentication & Session Tests"
+  
+  # JWT Analysis
+  _web_jwt_test "$target"
+  
+  # CSRF Check
+  _web_csrf_test "$target"
+  
+  divider
+  
+  # ════════════════════════════════════════════════════
+  #  PHASE 3: FILE & PATH ATTACKS
+  # ════════════════════════════════════════════════════
+  section "Phase 3: File & Path Tests"
+  
+  # Directory Traversal
+  _web_lfi_test "$target"
+  
+  divider
+  
+  # ════════════════════════════════════════════════════
+  #  PHASE 4: ADVANCED TESTS
+  # ════════════════════════════════════════════════════
+  section "Phase 4: Advanced Tests"
+  
+  # SSTI Test
+  _web_ssti_test "$target"
+  
+  # XXE Test
+  _web_xxe_test "$target"
+  
+  divider
+  
+  # ════════════════════════════════════════════════════
+  #  SCAN SUMMARY
+  # ════════════════════════════════════════════════════
+  section "Web Exploitation Scan Summary"
+  
+  info "Scan completed: $(date)"
+  info "Target: $target"
+  info "Report saved to: $REPORT_FILE"
+  
+  log_report "WEB_SCAN_COMPLETE: $(date)"
+  
+  # Tampilkan hint untuk manual testing
+  echo ""
+  info "Recommended manual follow-up:"
+  echo -e "  ${C}▸${NC} For deep SQLi scan: ${DIM}sqlmap -u \"$target\" --batch${NC}"
+  echo -e "  ${C}▸${NC} For comprehensive scan: ${DIM}nikto -h $target${NC}"
+  echo -e "  ${C}▸${NC} For directory brute force: ${DIM}gobuster dir -u $target -w /usr/share/wordlists/dirb/common.txt${NC}"
+  echo ""
+}
+
+# ════════════════════════════════════════════════════
+#  WEB VULNERABILITY TEST FUNCTIONS
+# ════════════════════════════════════════════════════
+
+# Test 1: SQL Injection Detection
+_web_sqli_test() {
+  local target="$1"
+  
+  info "Testing for SQL Injection..."
+  
+  # Common SQLi payloads
+  local -a sqli_payloads=(
+    "' OR '1'='1"
+    "' OR 1=1--"
+    "' OR '1'='1'--"
+    "admin'--"
+    "' UNION SELECT NULL--"
+    "1' ORDER BY 1--"
+  )
+  
+  # Test URL parameters if any
+  if echo "$target" | grep -q "?"; then
+    info "Testing URL parameters for SQLi..."
+    local base_url params
+    base_url=$(echo "$target" | cut -d'?' -f1)
+    params=$(echo "$target" | cut -d'?' -f2-)
+    
+    # Test each payload on each parameter
+    IFS='&' read -ra param_array <<< "$params"
+    for param in "${param_array[@]}"; do
+      local param_name param_value
+      param_name=$(echo "$param" | cut -d'=' -f1)
+      param_value=$(echo "$param" | cut -d'=' -f2-)
+      
+      for payload in "${sqli_payloads[@]}"; do
+        local test_url="${base_url}?${param_name}=$(python3 -c "import urllib.parse; print(urllib.parse.quote('$payload'))")"
+        local response
+        response=$(_web_get "$test_url" 5)
+        
+        # Check for SQL error messages
+        if echo "$response" | grep -qiE "sql syntax|mysql_fetch|mysqli_query|unclosed quotation|SQL error"; then
+          found "Potential SQL Injection at: $param_name"
+          found "Payload: $payload"
+          log_report "WEB_SQLI_FOUND: param=$param_name payload=$payload"
+          break
+        fi
+      done
+    done
+  else
+    info "No URL parameters found — skipping parameter SQLi test"
+    info "Tip: Try testing login forms or search boxes manually"
+  fi
+  
+  # Test for authentication bypass
+  if echo "$target" | grep -qiE "login|auth|signin"; then
+    info "Testing authentication bypass..."
+    # This would require POST request - skip for now
+    info "Authentication bypass test requires manual testing with POST requests"
+  fi
+}
+
+# Test 2: XSS Detection
+_web_xss_test() {
+  local target="$1"
+  
+  info "Testing for Cross-Site Scripting (XSS)..."
+  
+  # XSS payloads
+  local -a xss_payloads=(
+    "<script>alert('XSS')</script>"
+    "<img src=x onerror=alert('XSS')>"
+    "'\"><script>alert(1)</script>"
+    "javascript:alert(1)"
+    "<svg onload=alert(1)>"
+  )
+  
+  if echo "$target" | grep -q "?"; then
+    info "Testing URL parameters for XSS..."
+    local base_url params
+    base_url=$(echo "$target" | cut -d'?' -f1)
+    params=$(echo "$target" | cut -d'?' -f2-)
+    
+    IFS='&' read -ra param_array <<< "$params"
+    for param in "${param_array[@]}"; do
+      local param_name
+      param_name=$(echo "$param" | cut -d'=' -f1)
+      
+      for payload in "${xss_payloads[@]}"; do
+        local test_url="${base_url}?${param_name}=$(python3 -c "import urllib.parse; print(urllib.parse.quote('$payload'))")"
+        local response
+        response=$(_web_get "$test_url" 5)
+        
+        # Check if payload is reflected without sanitization
+        if echo "$response" | grep -qF "$payload"; then
+          found "Potential XSS (Reflected) at: $param_name"
+          found "Payload reflected: $payload"
+          log_report "WEB_XSS_FOUND: param=$param_name"
+          break
+        fi
+      done
+    done
+  else
+    info "No URL parameters found — skipping parameter XSS test"
+  fi
+}
+
+# Test 3: Command Injection
+_web_cmdi_test() {
+  local target="$1"
+  
+  info "Testing for Command Injection..."
+  
+  local -a cmdi_payloads=(
+    "; whoami"
+    "| whoami"
+    "&& whoami"
+    "; id"
+    "| id"
+    "'; cat /etc/passwd"
+  )
+  
+  if echo "$target" | grep -q "?"; then
+    local base_url params
+    base_url=$(echo "$target" | cut -d'?' -f1)
+    params=$(echo "$target" | cut -d'?' -f2-)
+    
+    IFS='&' read -ra param_array <<< "$params"
+    for param in "${param_array[@]}"; do
+      local param_name
+      param_name=$(echo "$param" | cut -d'=' -f1)
+      
+      for payload in "${cmdi_payloads[@]}"; do
+        local test_url="${base_url}?${param_name}=$(python3 -c "import urllib.parse; print(urllib.parse.quote('$payload'))")"
+        local response
+        response=$(_web_get "$test_url" 5)
+        
+        # Check for command execution indicators
+        if echo "$response" | grep -qiE "root:|bin/bash|uid=|gid="; then
+          found "Potential Command Injection at: $param_name"
+          found "Payload: $payload"
+          log_report "WEB_CMDI_FOUND: param=$param_name payload=$payload"
+          break
+        fi
+      done
+    done
+  else
+    info "No URL parameters found — skipping command injection test"
+  fi
+}
+
+# Test 4: JWT Analysis
+_web_jwt_test() {
+  local target="$1"
+  
+  info "Checking for JWT tokens..."
+  
+  # Check for JWT in cookies, headers, or response
+  local response
+  response=$(_web_get "$target" 5)
+  
+  # Look for JWT pattern (eyJ...)
+  local jwt_found
+  jwt_found=$(echo "$response" | grep -oE 'eyJ[A-Za-z0-9_-]+\.eyJ[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+' | head -1)
+  
+  if [[ -n "$jwt_found" ]]; then
+    found "JWT token found dalam response!"
+    info "Token: ${jwt_found:0:50}..."
+    log_report "WEB_JWT_FOUND: $jwt_found"
+    
+    # Decode JWT header
+    local header_b64
+    header_b64=$(echo "$jwt_found" | cut -d'.' -f1)
+    info "Decoding JWT header..."
+    echo "$header_b64" | python3 -c "
+import sys, base64, json
+try:
+    header = sys.stdin.read().strip()
+    # Add padding
+    header += '=' * (4 - len(header) % 4)
+    decoded = base64.urlsafe_b64decode(header)
+    print(json.dumps(json.loads(decoded), indent=2))
+except Exception as e:
+    print(f'Error decoding: {e}')
+" 2>/dev/null | sed 's/^/    /'
+  else
+    info "Tidak ada JWT token ditemukan dalam response"
+  fi
+}
+
+# Test 5: CSRF Check
+_web_csrf_test() {
+  local target="$1"
+  
+  info "Checking for CSRF protection..."
+  
+  local response
+  response=$(_web_get "$target" 5)
+  
+  # Check for CSRF tokens in forms
+  if echo "$response" | grep -qiE 'csrf_token|_token|authenticity_token|xsrf'; then
+    found "CSRF token ditemukan dalam HTML forms"
+    log_report "WEB_CSRF_TOKEN: Found"
+  else
+    warn "Tidak ada CSRF token terdeteksi — potensi CSRF vulnerability"
+    log_report "WEB_CSRF: No token detected - potential vulnerability"
+  fi
+  
+  # Check for SameSite cookie attribute
+  local headers
+  headers=$(_web_get_headers "$target")
+  if echo "$headers" | grep -qi "set-cookie"; then
+    if echo "$headers" | grep -qi "samesite"; then
+      found "Cookie memiliki SameSite attribute"
+    else
+      warn "Cookie tidak memiliki SameSite attribute"
+      log_report "WEB_COOKIE_SAMESITE: Missing"
+    fi
+  fi
+}
+
+# Test 6: Directory Traversal / LFI
+_web_lfi_test() {
+  local target="$1"
+  
+  info "Testing for Directory Traversal / Local File Inclusion..."
+  
+  local -a lfi_payloads=(
+    "../../../etc/passwd"
+    "..%2f..%2f..%2fetc%2fpasswd"
+    "....//....//....//etc/passwd"
+    "/etc/passwd"
+    "../../../../windows/system32/drivers/etc/hosts"
+  )
+  
+  if echo "$target" | grep -q "?"; then
+    local base_url params
+    base_url=$(echo "$target" | cut -d'?' -f1)
+    params=$(echo "$target" | cut -d'?' -f2-)
+    
+    IFS='&' read -ra param_array <<< "$params"
+    for param in "${param_array[@]}"; do
+      local param_name
+      param_name=$(echo "$param" | cut -d'=' -f1)
+      
+      for payload in "${lfi_payloads[@]}"; do
+        local test_url="${base_url}?${param_name}=$(python3 -c "import urllib.parse; print(urllib.parse.quote('$payload'))")"
+        local response
+        response=$(_web_get "$test_url" 5)
+        
+        # Check for file content indicators
+        if echo "$response" | grep -qE "^root:|/bin/bash|::1.*localhost"; then
+          found "Potential LFI at: $param_name"
+          found "Payload: $payload"
+          log_report "WEB_LFI_FOUND: param=$param_name payload=$payload"
+          break
+        fi
+      done
+    done
+  else
+    info "No URL parameters found — skipping LFI test"
+  fi
+}
+
+# Test 7: SSTI (Server-Side Template Injection)
+_web_ssti_test() {
+  local target="$1"
+  
+  info "Testing for Server-Side Template Injection (SSTI)..."
+  
+  local -a ssti_payloads=(
+    "{{7*7}}"
+    "\${7*7}"
+    "<%= 7*7 %>"
+    "{{config}}"
+    "\${{7*7}}"
+  )
+  
+  if echo "$target" | grep -q "?"; then
+    local base_url params
+    base_url=$(echo "$target" | cut -d'?' -f1)
+    params=$(echo "$target" | cut -d'?' -f2-)
+    
+    IFS='&' read -ra param_array <<< "$params"
+    for param in "${param_array[@]}"; do
+      local param_name
+      param_name=$(echo "$param" | cut -d'=' -f1)
+      
+      for payload in "${ssti_payloads[@]}"; do
+        local test_url="${base_url}?${param_name}=$(python3 -c "import urllib.parse; print(urllib.parse.quote('$payload'))")"
+        local response
+        response=$(_web_get "$test_url" 5)
+        
+        # Check for SSTI indicators (49 = 7*7)
+        if echo "$response" | grep -q "49"; then
+          found "Potential SSTI at: $param_name"
+          found "Payload: $payload → 49"
+          log_report "WEB_SSTI_FOUND: param=$param_name payload=$payload"
+          break
+        fi
+      done
+    done
+  else
+    info "No URL parameters found — skipping SSTI test"
+  fi
+}
+
+# Test 8: XXE (XML External Entity)
+_web_xxe_test() {
+  local target="$1"
+  
+  info "Testing for XML External Entity (XXE)..."
+  info "XXE testing requires POST requests with XML payloads"
+  info "Manual test required using tools like Burp Suite"
+  log_report "WEB_XXE: Manual test recommended"
+}
+
+# ─────────────────────────────────────────
 #  HELP
 # ─────────────────────────────────────────
 show_help() {
@@ -7507,12 +10102,15 @@ show_help() {
   echo -e "  fasfo auth.log     --Forensics --log      ${DIM}# log analysis (auth/ssh)${NC}"
   echo -e "  fasfo SAM          --Forensics --registry  ${DIM}# registry hive${NC}"
   echo -e "  fasfo link.lnk     --Forensics --windows   ${DIM}# LNK/Prefetch/EVTX${NC}"
+  echo -e "  fasfo binary.elf   --Forensics --pwn       ${DIM}# binary exploitation (BOF, ROP, shellcode)${NC}"
   echo -e "  fasfo binary.elf   --Forensics --adv-file  ${DIM}# deep file inspect + malware triage${NC}"
   echo -e "  fasfo memory.raw   --Forensics --adv-mem   ${DIM}# hidden proc, DLL inject, NTFS timeline${NC}"
   echo -e "  fasfo capture.pcap --Forensics --adv-net   ${DIM}# C2 detect, file recon, covert channel${NC}"
   echo -e "  fasfo photo.jpg    --Forensics --adv-stego ${DIM}# chi-square, LSB stats, audio, noise${NC}"
   echo -e "  fasfo cipher.txt   --Forensics --crypto    ${DIM}# crypto: Caesar, RSA, AES, hash, XOR${NC}"
   echo -e "  fasfo key.pem      --Forensics --crypto    ${DIM}# RSA key analysis + attack identification${NC}"
+  echo -e "  fasfo http://example.com --Forensics --web  ${DIM}# web exploitation scanner${NC}"
+  echo -e "  fasfo example.com  --Forensics --web        ${DIM}# web scan (auto-add http://)${NC}"
   echo -e "  fasfo --decode \"}tc4f1tr4_fn1_nur0tu4{FTC\"  ${DIM}# decode langsung${NC}"
   echo -e "  fasfo --decode \"RlRDe3R1cjBfMW5fNHJ0MTRmY3R9\"  ${DIM}# base64 decode${NC}"
   echo ""
@@ -7528,12 +10126,25 @@ show_help() {
   echo -e "  --log           Modul log analysis (auth, http, syslog, wtmp)"
   echo -e "  --registry      Modul registry (SAM/SYSTEM/NTUSER/memory)"
   echo -e "  --windows       Modul Windows artifact (LNK/Prefetch/EVTX)"
+  echo -e "  --pwn|--binary  Modul binary exploitation (BOF, ROP, shellcode, format string)"
+  echo -e "  --web           Modul web exploitation (SQLi, XSS, JWT, CSRF, LFI, SSTI, dll)${NC}"
   echo ""
   echo -e "${W}Advanced Options (v4.0.0):${NC}"
   echo -e "  --adv-file      Deep file inspect: chunk parsing, polyglot, XOR brute, malware triage"
   echo -e "  --adv-mem       Advanced DFIR: hidden proc, DLL inject, SSDT hooks, NTFS timeline"
   echo -e "  --adv-net       Advanced network: file recon PCAP, C2 detection, covert channels"
   echo -e "  --adv-stego     Advanced stego: chi-square, entropy, audio LSB, freq domain, noise"
+  echo ""
+  echo -e "${W}Binary Exploitation Modules (NEW):${NC}"
+  echo -e "  --pwn           ${M}🎯 NEW${NC} Full binary exploitation analysis:"
+  echo -e "                  ${DIM}├─ Buffer Overflow: dangerous func detection, offset analysis${NC}"
+  echo -e "                  ${DIM}├─ Integer Overflow/Underflow: arithmetic overflow detection${NC}"
+  echo -e "                  ${DIM}├─ Shellcode: NOP sled, syscall, execve detection${NC}"
+  echo -e "                  ${DIM}├─ Format String: printf family, %n write primitive${NC}"
+  echo -e "                  ${DIM}├─ ROP Chain: gadget finder, ret2libc, ret2win, one_gadget${NC}"
+  echo -e "                  ${DIM}├─ Type Confusion: C++ vtable, RTTI analysis${NC}"
+  echo -e "                  ${DIM}├─ Uninitialized Memory: BSS, malloc/calloc analysis${NC}"
+  echo -e "                  ${DIM}└─ Bypass Protection: PIE, CANARY, NX, RELRO analysis${NC}"
   echo ""
   echo -e "${W}Crypto Options (v5.0.0 — NEW):${NC}"
   echo -e "  --crypto        ${M}🔐 NEW${NC} Full crypto suite:"
@@ -7551,8 +10162,18 @@ show_help() {
   echo -e "  --version       Tampilkan versi"
   echo -e "  --help, -h      Tampilkan bantuan ini"
   echo ""
+  echo -e "${W}Filter Options:${NC}"
+  echo -e "  --flag-filter 'CTF{,FLAG{,HTB{'  ${DIM}# Filter flag di SUMMARY berdasarkan prefix${NC}"
+  echo -e "                  ${DIM}Contoh: fasfo file.png --Forensics --flag-filter 'CTF{,LKS{'${NC}"
+  echo -e "                  ${DIM}Hanya tampilkan flag yang mengandung prefix CTF{ atau LKS{${NC}"
+  echo ""
+  echo -e "${W}Tips:${NC}"
+  echo -e "  ${Y}Ctrl+C${NC}              ${DIM}Skip tool yang sedang berjalan, lanjut ke tool/modul berikutnya${NC}"
+  echo -e "                  ${DIM}(Berguna untuk stegseek, john, fcrackzip yang lama)${NC}"
+  echo ""
   echo -e "${W}Env vars:${NC}"
   echo -e "  FASFO_WORDLIST=/path/to/wordlist.txt  ${DIM}# custom wordlist untuk bruteforce${NC}"
+  echo -e "  FASFO_FLAG_FILTER='CTF{,FLAG{'         ${DIM}# sama dengan --flag-filter${NC}"
   echo ""
 }
 
@@ -7708,6 +10329,352 @@ _prompt_session_folder() {
 
   echo -e "  ${G}[✔]${NC} Folder laporan: ${W}$SESSION_REPORT_DIR${NC}"
   echo ""
+
+  # ── Prompt untuk flag filter ──
+  echo -e "  ${BOLD}${C}┌─────────────────────────────────────────────────┐${NC}"
+  echo -e "  ${BOLD}${C}│${NC}  ${W}🎯 Flag Format Filter (Opsional)${NC}                ${BOLD}${C}│${NC}"
+  echo -e "  ${BOLD}${C}│${NC}  ${DIM}Filter flag yang ditampilkan di SUMMARY.${NC}      ${BOLD}${C}│${NC}"
+  echo -e "  ${BOLD}${C}│${NC}  ${DIM}Format: prefix dipisahkan koma${NC}                 ${BOLD}${C}│${NC}"
+  echo -e "  ${BOLD}${C}│${NC}  ${DIM}Contoh: CTF{,FLAG{,LKS{,HTB{${NC}                    ${BOLD}${C}│${NC}"
+  echo -e "  ${BOLD}${C}│${NC}  ${DIM}[Enter] = tampilkan semua flag${NC}                  ${BOLD}${C}│${NC}"
+  echo -e "  ${BOLD}${C}└─────────────────────────────────────────────────┘${NC}"
+  printf "  ${Y}▶${NC} Flag filter: "
+  read -r filter_input
+
+  # Set flag filter jika user mengisi
+  if [[ -n "$filter_input" ]]; then
+    FLAG_FILTER="$filter_input"
+    echo -e "  ${G}[✔]${NC} Filter aktif: ${W}$FLAG_FILTER${NC}"
+    echo -e "  ${DIM}  (Hanya flag dengan prefix tersebut yang ditampilkan di SUMMARY)${NC}"
+  else
+    echo -e "  ${DIM}  (Tidak ada filter - semua flag akan ditampilkan)${NC}"
+  fi
+  echo ""
+}
+
+# ─────────────────────────────────────────
+#  HELPER — SKIP MECHANISM (Ctrl+C)
+# ─────────────────────────────────────────
+# Setup trap untuk skip tool yang sedang berjalan
+_setup_skip_trap() {
+  trap '_skip_current_tool' INT
+}
+
+# Remove trap
+_remove_skip_trap() {
+  trap - INT
+}
+
+# Handler untuk skip
+_skip_current_tool() {
+  echo ""
+  echo -e "  ${Y}[⚠]${NC} Tool dilewati (Ctrl+C ditekan). Melanjutkan ke tool/modul berikutnya..."
+  SKIP_CURRENT_TOOL=true
+  # Kill background processes jika ada
+  jobs -p 2>/dev/null | xargs -r kill 2>/dev/null
+  return 0
+}
+
+# Wrapper untuk menjalankan tool dengan skip support
+_run_with_skip() {
+  local tool_name="$1"
+  shift
+  
+  echo -e "  ${DIM}[Tekan Ctrl+C untuk skip ke tool berikutnya]${NC}"
+  SKIP_CURRENT_TOOL=false
+  _setup_skip_trap
+  
+  # Jalankan command
+  "$@" &
+  local pid=$!
+  
+  # Wait untuk process selesai atau di-skip
+  while kill -0 $pid 2>/dev/null; do
+    if [[ "$SKIP_CURRENT_TOOL" == true ]]; then
+      kill $pid 2>/dev/null
+      wait $pid 2>/dev/null
+      _remove_skip_trap
+      return 1
+    fi
+    wait $pid 2>/dev/null
+  done
+  
+  _remove_skip_trap
+  
+  # Reset flag
+  SKIP_CURRENT_TOOL=false
+  return 0
+}
+
+# ─────────────────────────────────────────
+#  MENU WEB EXPLOITATION — PILIH JENIS SCAN
+# ─────────────────────────────────────────
+menu_web_exploitation() {
+  local target="$1"
+  
+  banner
+  echo -e "  ${BOLD}${C}┌─────────────────────────────────────────────────┐${NC}"
+  echo -e "  ${BOLD}${C}│${NC}  ${W}🌐 Web Exploitation Scanner${NC}                   ${BOLD}${C}│${NC}"
+  echo -e "  ${BOLD}${C}│${NC}  ${DIM}Scanner untuk vulnerability web sesuai OWASP${NC}  ${BOLD}${C}│${NC}"
+  echo -e "  ${BOLD}${C}│${NC}  ${DIM}Top 10 dan CWE categories${NC}                     ${BOLD}${C}│${NC}"
+  echo -e "  ${BOLD}${C}└─────────────────────────────────────────────────┘${NC}"
+  echo ""
+  echo -e "  ${W}Target :${NC} ${BOLD}$target${NC}"
+  echo ""
+  echo -e "  ${Y}⚠️  PERINGATAN:${NC} Gunakan hanya pada target yang Anda miliki"
+  echo -e "  ${DIM}atau memiliki izin tertulis untuk penetration testing.${NC}"
+  echo ""
+  
+  menu_select "Pilih Jenis Web Scan" \
+    "📊  Quick Scan — Headers, tech, robots.txt" \
+    "💉  Injection Tests — SQLi, XSS, Command Injection" \
+    "🔐  Auth & Session — JWT, CSRF, IDOR" \
+    "📁  File Attacks — LFI, Directory Traversal" \
+    "🎯  Advanced — SSTI, XXE, Business Logic" \
+    "🔍  Full Scan — Semua vulnerability checks"
+
+  case "$MENU_IDX" in
+    1)
+      # Quick Scan - hanya information gathering
+      banner
+      mod_web_quick_scan "$target"
+      ;;
+    2)
+      # Injection Tests
+      banner
+      mod_web_injection_tests "$target"
+      ;;
+    3)
+      # Auth & Session
+      banner
+      mod_web_auth_tests "$target"
+      ;;
+    4)
+      # File Attacks
+      banner
+      mod_web_file_attacks "$target"
+      ;;
+    5)
+      # Advanced
+      banner
+      mod_web_advanced_tests "$target"
+      ;;
+    6)
+      # Full Scan
+      banner
+      mod_web_exploitation "$target"
+      ;;
+  esac
+
+  echo ""
+  printf "  ${Y}▶${NC} Kembali ke menu utama? [Y/n]: "
+  read -r back
+  if [[ ! "$back" =~ ^[nN]$ ]]; then
+    menu_mode_utama "$target"
+  fi
+}
+
+# Quick Scan - Information Gathering only
+mod_web_quick_scan() {
+  local target="$1"
+  
+  if _is_valid_url "$target"; then
+    target=$(_normalize_url "$target")
+  else
+    warn "Target bukan URL valid: $target"
+    return 1
+  fi
+  
+  TARGET="$target"
+  section "Web Quick Scan — Information Gathering"
+  info "Target URL: ${BOLD}$target${NC}"
+  log_report "WEB_TARGET: $target"
+  
+  # Technology Detection
+  section "Phase 0: Information Gathering"
+  
+  info "Mendeteksi teknologi yang digunakan..."
+  if has whatweb; then
+    local tech_info
+    tech_info=$(whatweb --color=never "$target" 2>/dev/null | head -20)
+    if [[ -n "$tech_info" ]]; then
+      found "Technology stack detected:"
+      echo "$tech_info" | sed 's/^/    /'
+      log_report "WEB_TECHNOLOGY: $tech_info"
+    fi
+  else
+    info "whatweb not found — install: sudo apt install whatweb"
+  fi
+  
+  # HTTP Headers
+  divider
+  info "Menganalisis HTTP headers..."
+  local headers
+  headers=$(_web_get_headers "$target")
+  if [[ -n "$headers" ]]; then
+    log_report "WEB_HEADERS_HTTP: $headers"
+    
+    local server_header
+    server_header=$(echo "$headers" | grep -i "^Server:" | head -1)
+    [[ -n "$server_header" ]] && found "Server: $server_header" && log_report "WEB_SERVER: $server_header"
+    
+    local powered_by
+    powered_by=$(echo "$headers" | grep -i "^X-Powered-By:" | head -1)
+    [[ -n "$powered_by" ]] && found "X-Powered-By: $powered_by" && log_report "WEB_POWERED_BY: $powered_by"
+  fi
+  
+  # Security Headers
+  divider
+  info "Memeriksa security headers..."
+  local missing_headers=()
+  
+  for header in "strict-transport-security" "x-frame-options" "x-content-type-options" "content-security-policy" "x-xss-protection"; do
+    if ! echo "$headers" | grep -qi "$header"; then
+      missing_headers+=("$header")
+    fi
+  done
+  
+  if [[ ${#missing_headers[@]} -gt 0 ]]; then
+    warn "Missing security headers (${#missing_headers[@]}):"
+    for h in "${missing_headers[@]}"; do
+      echo -e "    ${Y}✗${NC} $h"
+      log_report "WEB_MISSING_HEADER: $h"
+    done
+  else
+    found "All major security headers present"
+  fi
+  
+  # robots.txt
+  divider
+  info "Checking robots.txt..."
+  local base_url
+  base_url=$(echo "$target" | sed 's|/[^/]*$||' | sed 's|/$||')
+  local robots_txt
+  robots_txt=$(_web_get "$base_url/robots.txt" 5)
+  if echo "$robots_txt" | grep -qiE "^Disallow:"; then
+    found "robots.txt found with Disallow rules:"
+    echo "$robots_txt" | grep -i "^Disallow:" | sed 's/^/    /'
+    log_report "WEB_ROBOTS_TXT: Disallow rules found"
+  else
+    info "No robots.txt or no Disallow rules"
+  fi
+  
+  section "Quick Scan Summary"
+  info "Scan completed: $(date)"
+  info "Target: $target"
+  log_report "WEB_QUICK_SCAN_COMPLETE: $(date)"
+}
+
+# Injection Tests
+mod_web_injection_tests() {
+  local target="$1"
+  
+  if _is_valid_url "$target"; then
+    target=$(_normalize_url "$target")
+  else
+    warn "Target bukan URL valid: $target"
+    return 1
+  fi
+  
+  TARGET="$target"
+  section "Web Injection Tests"
+  info "Target URL: ${BOLD}$target${NC}"
+  log_report "WEB_TARGET: $target"
+  
+  # SQL Injection
+  _web_sqli_test "$target"
+  divider
+  
+  # XSS
+  _web_xss_test "$target"
+  divider
+  
+  # Command Injection
+  _web_cmdi_test "$target"
+  
+  section "Injection Tests Summary"
+  info "Tests completed: $(date)"
+  log_report "WEB_INJECTION_TESTS_COMPLETE: $(date)"
+}
+
+# Auth & Session Tests
+mod_web_auth_tests() {
+  local target="$1"
+  
+  if _is_valid_url "$target"; then
+    target=$(_normalize_url "$target")
+  else
+    warn "Target bukan URL valid: $target"
+    return 1
+  fi
+  
+  TARGET="$target"
+  section "Web Authentication & Session Tests"
+  info "Target URL: ${BOLD}$target${NC}"
+  log_report "WEB_TARGET: $target"
+  
+  # JWT
+  _web_jwt_test "$target"
+  divider
+  
+  # CSRF
+  _web_csrf_test "$target"
+  
+  section "Auth Tests Summary"
+  info "Tests completed: $(date)"
+  log_report "WEB_AUTH_TESTS_COMPLETE: $(date)"
+}
+
+# File Attacks Tests
+mod_web_file_attacks() {
+  local target="$1"
+  
+  if _is_valid_url "$target"; then
+    target=$(_normalize_url "$target")
+  else
+    warn "Target bukan URL valid: $target"
+    return 1
+  fi
+  
+  TARGET="$target"
+  section "Web File & Path Attacks"
+  info "Target URL: ${BOLD}$target${NC}"
+  log_report "WEB_TARGET: $target"
+  
+  # LFI / Directory Traversal
+  _web_lfi_test "$target"
+  
+  section "File Attacks Summary"
+  info "Tests completed: $(date)"
+  log_report "WEB_FILE_ATTACKS_COMPLETE: $(date)"
+}
+
+# Advanced Tests
+mod_web_advanced_tests() {
+  local target="$1"
+  
+  if _is_valid_url "$target"; then
+    target=$(_normalize_url "$target")
+  else
+    warn "Target bukan URL valid: $target"
+    return 1
+  fi
+  
+  TARGET="$target"
+  section "Web Advanced Tests"
+  info "Target URL: ${BOLD}$target${NC}"
+  log_report "WEB_TARGET: $target"
+  
+  # SSTI
+  _web_ssti_test "$target"
+  divider
+  
+  # XXE
+  _web_xxe_test "$target"
+  
+  section "Advanced Tests Summary"
+  info "Tests completed: $(date)"
+  log_report "WEB_ADVANCED_TESTS_COMPLETE: $(date)"
 }
 
 # ─────────────────────────────────────────
@@ -7731,17 +10698,21 @@ menu_mode_utama() {
 
   menu_select "Pilih Mode Analisis" \
     "🔍  Forensics — Analisis file / CTF" \
+    "🎯  Binary Exploitation — Buffer overflow, ROP, shellcode, pwn" \
     "🔐  Crypto    — Analisis kriptografi & enkripsi" \
+    "🌐  Web Exploitation — Scanner & vulnerability analysis" \
     "🔧  Dependency Check — Cek tools" \
     "ℹ️   Info & Help" \
     "🗑️   Lihat Laporan Tersimpan"
 
   case "$MENU_IDX" in
     1) menu_forensics "$target" ;;
-    2) menu_crypto "$target" ;;
-    3) banner; check_deps ;;
-    4) show_help ;;
-    5) menu_laporan ;;
+    2) menu_binary_exploitation "$target" ;;
+    3) menu_crypto "$target" ;;
+    4) menu_web_exploitation "$target" ;;
+    5) banner; check_deps ;;
+    6) show_help ;;
+    7) menu_laporan ;;
   esac
 }
 
@@ -7768,6 +10739,7 @@ menu_forensics() {
     "🧬  Advanced Memory     — hidden proc, DLL inject, NTFS, timeline"
     "📡  Advanced Network    — file recon, C2 detect, covert channel"
     "🎭  Advanced Stego      — chi-square, audio, frequency, noise"
+    "🦠  Malware Analysis    — Dropper tracker, AI/Torch scanner"
     "⚡  Full Scan           — Jalankan SEMUA modul sesuai tipe file"
   )
 
@@ -7815,6 +10787,7 @@ menu_forensics() {
 
   # Tanya nama folder laporan
   _prompt_session_folder
+  _prompt_target_search
 
   # Setup report
   REPORT_FILE="$SESSION_REPORT_DIR/$(basename "$target")_$(date +%Y%m%d_%H%M%S).txt"
@@ -7828,10 +10801,11 @@ menu_forensics() {
   echo -e "  ${W}Mode   :${NC} Forensics (Interactive)"
   echo -e "  ${W}Report :${NC} $REPORT_FILE"
 
+
   local run_all=false
-  # cek apakah Full Scan (idx 13) dipilih
+  # cek apakah Full Scan (idx 14) dipilih
   for idx in "${MENU_SELECTED[@]}"; do
-    [[ "$idx" == "13" ]] && run_all=true
+    [[ "$idx" == "14" ]] && run_all=true
   done
 
   if [[ "$run_all" == true ]]; then
@@ -7855,6 +10829,108 @@ menu_forensics() {
         10) mod_advanced_memory   "$target" ;;
         11) mod_advanced_network  "$target" ;;
         12) mod_advanced_stego    "$target" ;;
+        13) 
+           mod_malware_dropper_tracker "$target"
+           mod_ai_malware_analysis     "$target"
+           ;;
+      esac
+    done
+  fi
+
+
+  print_summary
+
+  # Tanya apakah mau scan lagi dengan modul lain
+  echo ""
+  printf "  ${Y}▶${NC} Jalankan modul lain untuk target yang sama? [y/N]: "
+  read -r lagi
+  if [[ "$lagi" =~ ^[yY]$ ]]; then
+    menu_forensics "$target"
+  fi
+}
+
+# ─────────────────────────────────────────
+#  MENU BINARY EXPLOITATION — PILIH MODUL PWN
+# ─────────────────────────────────────────
+menu_binary_exploitation() {
+  local target="$1"
+
+  echo -e "\n  ${C}[*]${NC} Mode: ${BOLD}Binary Exploitation${NC} → Target: ${W}$target${NC}"
+
+  # Susun daftar modul binary exploitation
+  local pwn_opts=(
+    "🎯  Full Binary Exploitation — Jalankan SEMUA modul pwn"
+    "💥  Buffer Overflow — Dangerous func, canary, offset analysis"
+    "🔢  Integer Overflow/Underflow — Arithmetic overflow detection"
+    "🐚  Shellcode Analysis — NOP sled, syscall, execve detection"
+    "📝  Format String — Printf family, %n write primitive"
+    "⛓️   ROP Chain — Gadget finder, ret2libc, ret2win, one_gadget"
+    "🔄  Type Confusion — C++ vtable, RTTI analysis"
+    "🧠  Uninitialized Memory — BSS, malloc/calloc analysis"
+    "🛡️   Bypass Protection — PIE, CANARY, NX, RELRO analysis"
+  )
+
+  # Auto-hint berdasarkan tipe file
+  if [[ -f "$target" ]]; then
+    local _ft _bn
+    _ft=$(file --brief "$target" 2>/dev/null | tr '[:upper:]' '[:lower:]')
+    _bn=$(basename "$target" | tr '[:upper:]' '[:lower:]')
+    echo ""
+    echo -e "  ${Y}[!]${NC} ${BOLD}Saran modul berdasarkan tipe binary:${NC}"
+    echo "$_ft" | grep -qiE "elf.*executable|elf.*shared object" && \
+      echo -e "      ${G}→${NC} ELF binary terdeteksi — disarankan: ${W}[1] Full Binary Exploitation${NC}"
+    echo "$_ft" | grep -qiE "pe32.*executable|pe32\+.*executable|ms-dos" && \
+      echo -e "      ${G}→${NC} PE binary terdeteksi — disarankan: ${W}[1] Full Binary Exploitation${NC}"
+    echo "$_bn" | grep -qiE "\.(elf|out|exe|dll)$" && \
+      echo -e "      ${G}→${NC} Executable terdeteksi — disarankan: ${W}[1] Full Binary Exploitation${NC}"
+    echo "$_ft" | grep -qiE "elf.*32-bit" && \
+      echo -e "      ${G}→${NC} 32-bit ELF — fokus: ${W}[2] Buffer Overflow${NC} + ${W}[5] ROP Chain${NC}"
+    echo "$_ft" | grep -qiE "elf.*64-bit" && \
+      echo -e "      ${G}→${NC} 64-bit ELF — fokus: ${W}[5] ROP Chain${NC} + ${W}[8] Bypass Protection${NC}"
+    echo "$_ft" | grep -qiE "stripped" && \
+      echo -e "      ${Y}[!] Binary stripped — reverse engineering diperlukan"
+  fi
+
+  menu_multiselect "Pilih Modul Binary Exploitation" "${pwn_opts[@]}"
+
+  # Tanya nama folder laporan
+  _prompt_session_folder
+  _prompt_target_search
+
+  # Setup report
+  REPORT_FILE="$SESSION_REPORT_DIR/$(basename "$target")_$(date +%Y%m%d_%H%M%S).txt"
+  echo "FASFO Binary Exploitation Report — $(date)"  > "$REPORT_FILE"
+  echo "Target: $target"                             >> "$REPORT_FILE"
+  echo "Session: $SESSION_REPORT_DIR"                >> "$REPORT_FILE"
+  echo "---"                                         >> "$REPORT_FILE"
+
+  banner
+  echo -e "  ${W}Target :${NC} $target"
+  echo -e "  ${W}Mode   :${NC} Binary Exploitation (Interactive)"
+  echo -e "  ${W}Report :${NC} $REPORT_FILE"
+
+  local run_all=false
+  # cek apakah Full Binary Exploitation (idx 0) dipilih
+  for idx in "${MENU_SELECTED[@]}"; do
+    [[ "$idx" == "0" ]] && run_all=true
+  done
+
+  if [[ "$run_all" == true ]]; then
+    echo -e "  ${DIM}[i] Full Binary Exploitation: menjalankan semua modul pwn.${NC}"
+    echo ""
+    mod_binary_exploitation "$target"
+  else
+    for idx in "${MENU_SELECTED[@]}"; do
+      case "$idx" in
+        0) mod_binary_exploitation  "$target" ;;
+        1) mod_binary_exploitation  "$target" ;;
+        2) mod_binary_exploitation  "$target" ;;
+        3) mod_binary_exploitation  "$target" ;;
+        4) mod_binary_exploitation  "$target" ;;
+        5) mod_binary_exploitation  "$target" ;;
+        6) mod_binary_exploitation  "$target" ;;
+        7) mod_binary_exploitation  "$target" ;;
+        8) mod_binary_exploitation  "$target" ;;
       esac
     done
   fi
@@ -7866,7 +10942,7 @@ menu_forensics() {
   printf "  ${Y}▶${NC} Jalankan modul lain untuk target yang sama? [y/N]: "
   read -r lagi
   if [[ "$lagi" =~ ^[yY]$ ]]; then
-    menu_forensics "$target"
+    menu_binary_exploitation "$target"
   fi
 }
 
@@ -7911,6 +10987,7 @@ menu_crypto() {
 
   # Tanya nama folder laporan
   _prompt_session_folder
+  _prompt_target_search
 
   # Setup report
   REPORT_FILE="$SESSION_REPORT_DIR/$(basename "$target")_crypto_$(date +%Y%m%d_%H%M%S).txt"
@@ -7953,6 +11030,7 @@ menu_crypto() {
 _run_full_scan() {
   local target="$1"
 
+
   # Crypto TIDAK termasuk Full Scan Forensics — gunakan Mode Crypto terpisah.
   MOD_CRYPTO=false
 
@@ -7987,6 +11065,13 @@ _run_full_scan() {
        [[ "$_ft" == *"memory"* ]] || [[ "$_ft" == *"dump"* ]] || [[ "$_ft" == *"crash"* ]]; then
       mod_registry "$target"
     fi
+    # Binary exploitation auto-detect (ELF/PE executables)
+    if [[ "$_ft" == *"elf"*"executable"* ]] || [[ "$_ft" == *"elf"*"shared object"* ]] || \
+       [[ "$_ft" == *"pe32"*"executable"* ]] || [[ "$_ft" == *"pe32+"*"executable"* ]] || \
+       [[ "$_ft" == *"ms-dos"*"executable"* ]] || \
+       [[ "$_bn" =~ \.(elf|out|exe|dll)$ ]]; then
+      mod_binary_exploitation "$target"
+    fi
     echo "$_ft" | grep -qiE "png|jpeg|gif|bmp|tiff|image|audio|wave|mp3" && \
       mod_advanced_stego "$target"
     # Windows artifact auto-detect
@@ -7995,7 +11080,12 @@ _run_full_scan() {
        [[ "$_ft" == *"evt"* ]] || [[ "$_bn" == *.evtx ]]; then
       mod_windows_artifacts "$target"
     fi
+
+    # Malware Dropper & AI Scanner
+    mod_malware_dropper_tracker "$target"
+    mod_ai_malware_analysis     "$target"
   fi
+
   mod_osint "$target"
   # Catatan: mod_cryptography TIDAK dijalankan di Full Scan Forensics.
   # Gunakan Mode Crypto (menu terpisah) untuk analisis kriptografi.
@@ -8086,6 +11176,7 @@ _parse_flags() {
   MOD_FILE=false; MOD_STEGO=false; MOD_NET=false
   MOD_MEM=false;  MOD_OSINT=false; MOD_ARCHIVE=false
   MOD_LOG=false; MOD_REGISTRY=false; MOD_WINDOWS=false
+  MOD_PWN=false; MOD_WEB=false; MOD_MALWARE=false
   MOD_ADV_FILE=false; MOD_ADV_MEM=false; MOD_ADV_NET=false; MOD_ADV_STEGO=false
   MOD_CRYPTO=false
 
@@ -8101,11 +11192,30 @@ _parse_flags() {
       --log)       MOD_LOG=true;     MODE_ALL=false ;;
       --registry)  MOD_REGISTRY=true; MODE_ALL=false ;;
       --windows)   MOD_WINDOWS=true;  MODE_ALL=false ;;
+      --malware)   MOD_MALWARE=true;  MODE_ALL=false ;;
+      --pwn|--binary) MOD_PWN=true;   MODE_ALL=false ;;
+      --web)       MOD_WEB=true;     MODE_ALL=false ;;
       --adv-file)  MOD_ADV_FILE=true;    MODE_ALL=false ;;
       --adv-mem)   MOD_ADV_MEM=true;     MODE_ALL=false ;;
       --adv-net)   MOD_ADV_NET=true;     MODE_ALL=false ;;
       --adv-stego) MOD_ADV_STEGO=true;   MODE_ALL=false ;;
       --crypto|--crypto-ctf) MOD_CRYPTO=true; MODE_ALL=false ;;
+      --flag-filter=*)
+        FLAG_FILTER="${arg#--flag-filter=}"
+        ;;
+      --flag-filter)
+        # Next argument should be the filter value
+        shift
+        FLAG_FILTER="${1:-}"
+        ;;
+      --search=*|--keyword=*)
+        TARGET_KEYWORDS="${arg#*=}"
+        ;;
+      --search|--keyword)
+        # We can't easily shift in 'for arg in $@' but we'll try to handle it
+        shift
+        TARGET_KEYWORDS="${1:-}"
+        ;;
     esac
   done
 }
@@ -8115,6 +11225,8 @@ _parse_flags() {
 # ─────────────────────────────────────────
 _run_selected_modules() {
   local target="$1"
+
+
   if [[ "$MODE_ALL" == true ]]; then
     _run_full_scan "$target"
   else
@@ -8126,6 +11238,12 @@ _run_selected_modules() {
     $MOD_LOG       && mod_log_analysis      "$target"
     $MOD_REGISTRY  && mod_registry          "$target"
     $MOD_WINDOWS   && mod_windows_artifacts "$target"
+    $MOD_PWN       && mod_binary_exploitation "$target"
+    $MOD_WEB       && mod_web_exploitation "$target"
+    if [[ "$MOD_MALWARE" == true ]]; then
+      mod_malware_dropper_tracker "$target"
+      mod_ai_malware_analysis     "$target"
+    fi
     $MOD_ADV_FILE  && mod_advanced_file     "$target"
     $MOD_ADV_MEM   && mod_advanced_memory   "$target"
     $MOD_ADV_NET   && mod_advanced_network  "$target"
@@ -8246,6 +11364,7 @@ _run_multiscan_cli() {
       $MOD_MEM     && mlist+="Memory "
       $MOD_ARCHIVE && mlist+="Archive "
       $MOD_LOG     && mlist+="Log "
+      $MOD_PWN     && mlist+="Pwn "
       $MOD_OSINT   && mlist+="OSINT "
       echo "$mlist"
     fi
@@ -8254,6 +11373,7 @@ _run_multiscan_cli() {
 
   # Tanya nama folder laporan (satu kali, berlaku ke semua file)
   _prompt_session_folder
+  _prompt_target_search
 
   # Progress bar helper
   _draw_progress() {
@@ -8296,6 +11416,7 @@ _run_multiscan_cli() {
 
     # Jalankan modul
     _run_selected_modules "$tgt"
+    
     print_summary
     scan_results+=("OK")
 
@@ -8349,20 +11470,30 @@ _run_multiscan_interactive() {
   # Pilih mode analisis dulu (satu kali, berlaku ke semua file)
   menu_select "Pilih Mode Analisis" \
     "🔍  Forensics — Analisis semua file" \
+    "🎯  Binary Exploitation — Pwn semua binary file" \
     "🔐  Crypto    — Analisis kriptografi & enkripsi" \
     "🔧  Dependency Check — Cek tools" \
     "ℹ️   Info & Help"
 
   case "$MENU_IDX" in
-    3) check_deps; return ;;
-    4) show_help;  return ;;
+    4) check_deps; return ;;
+    5) show_help;  return ;;
   esac
 
   # Jika pilih Crypto, jalankan menu_crypto untuk tiap file
-  if [[ "$MENU_IDX" == "2" ]]; then
+  if [[ "$MENU_IDX" == "3" ]]; then
     for tgt in "${targets[@]}"; do
       _is_valid_target "$tgt" || continue
       menu_crypto "$tgt"
+    done
+    return
+  fi
+
+  # Jika pilih Binary Exploitation, jalankan menu_binary_exploitation untuk tiap file
+  if [[ "$MENU_IDX" == "2" ]]; then
+    for tgt in "${targets[@]}"; do
+      _is_valid_target "$tgt" || continue
+      menu_binary_exploitation "$tgt"
     done
     return
   fi
@@ -8376,10 +11507,13 @@ _run_multiscan_interactive() {
     "📦  Archive Analysis  — ZIP/RAR/7Z + bruteforce"
     "🗒️   Log Analysis      — auth, http, syslog, wtmp, dll"
     "🕵️   OSINT             — whois, DNS, metadata recon"
+    "🪟  Registry Analysis — SAM/SYSTEM/NTUSER/UserAssist/Run keys"
+    "💻  Windows Artifacts — LNK / Prefetch / Event Log (.evtx)"
     "🔬  Advanced File     — deep inspect, polyglot, XOR, malware triage"
     "🧬  Advanced Memory   — hidden proc, DLL inject, NTFS, timeline"
     "📡  Advanced Network  — file recon, C2 detect, covert channel"
     "🎭  Advanced Stego    — chi-square, audio, frequency, noise"
+    "🦠  Malware Analysis  — Dropper tracker, AI/Torch scanner"
     "⚡  Full Scan         — Jalankan SEMUA modul sesuai tipe file"
   )
 
@@ -8397,6 +11531,7 @@ _run_multiscan_interactive() {
     echo "$_ft" | grep -qiE "pcap|tcpdump|capture"   && has_pcap=true
     echo "$_ft" | grep -qiE "zip|rar|7-zip|gzip|tar" && has_arc=true
     echo "$_bn" | grep -qiE "\.log$|auth|syslog|messages|wtmp|btmp" && has_log=true
+    echo "$_ft" | grep -qiE "elf.*executable|pe32.*executable|ms-dos" && has_binary=true
   done
 
   echo ""
@@ -8405,18 +11540,22 @@ _run_multiscan_interactive() {
   $has_pcap && echo -e "      ${G}→${NC} PCAP terdeteksi    — disarankan: ${W}[3] Network Forensics${NC}"
   $has_arc  && echo -e "      ${G}→${NC} Archive terdeteksi — disarankan: ${W}[5] Archive Analysis${NC}"
   $has_log  && echo -e "      ${G}→${NC} Log terdeteksi     — disarankan: ${W}[6] Log Analysis${NC}"
-  echo -e "      ${G}→${NC} Campuran / tidak yakin — pilih: ${W}[12] Full Scan${NC}"
+  $has_binary && echo -e "      ${G}→${NC} Binary ELF/PE terdeteksi — disarankan: ${W}[8] Binary Exploitation${NC}"
+  echo -e "      ${G}→${NC} Campuran / tidak yakin — pilih: ${W}[14] Full Scan${NC}"
 
   menu_multiselect "Pilih Modul untuk Semua File" "${modul_opts[@]}"
 
   # Tanya nama folder laporan (satu kali untuk semua file)
   _prompt_session_folder
+  _prompt_target_search
 
   # Terjemahkan pilihan menu ke flag modul
   HAS_FORENSICS=true
   MODE_ALL=false
   MOD_FILE=false; MOD_STEGO=false; MOD_NET=false
   MOD_MEM=false;  MOD_OSINT=false; MOD_ARCHIVE=false; MOD_LOG=false
+  MOD_REGISTRY=false; MOD_WINDOWS=false; MOD_MALWARE=false
+  MOD_PWN=false; MOD_WEB=false
   MOD_ADV_FILE=false; MOD_ADV_MEM=false; MOD_ADV_NET=false; MOD_ADV_STEGO=false
   MOD_CRYPTO=false
 
@@ -8430,11 +11569,14 @@ _run_multiscan_interactive() {
       4) MOD_ARCHIVE=true   ;;
       5) MOD_LOG=true       ;;
       6) MOD_OSINT=true     ;;
-      7) MOD_ADV_FILE=true  ;;
-      8) MOD_ADV_MEM=true   ;;
-      9) MOD_ADV_NET=true   ;;
-      10) MOD_ADV_STEGO=true ;;
-      11) run_all=true      ;;
+      7) MOD_REGISTRY=true  ;;
+      8) MOD_WINDOWS=true   ;;
+      9) MOD_ADV_FILE=true  ;;
+      10) MOD_ADV_MEM=true  ;;
+      11) MOD_ADV_NET=true  ;;
+      12) MOD_ADV_STEGO=true ;;
+      13) MOD_MALWARE=true  ;;
+      14) run_all=true      ;;
     esac
   done
   [[ "$run_all" == true ]] && MODE_ALL=true
@@ -8475,6 +11617,7 @@ _run_multiscan_interactive() {
     echo "---"                        >> "$REPORT_FILE"
 
     _run_selected_modules "$tgt"
+    
     print_summary
     scan_results+=("OK")
 
@@ -8558,7 +11701,8 @@ main() {
          "$arg" == --archive   || "$arg" == --log  || \
          "$arg" == --adv-file  || "$arg" == --adv-mem || \
          "$arg" == --adv-net   || "$arg" == --adv-stego || \
-         "$arg" == --crypto ]] && has_cli_flags=true
+         "$arg" == --crypto    || "$arg" == --web || \
+         "$arg" == --flag-filter ]] && has_cli_flags=true
     else
       raw_targets+=("$arg")
     fi
@@ -8588,6 +11732,7 @@ main() {
 
       # Tanya nama folder laporan
       _prompt_session_folder
+  _prompt_target_search
 
       REPORT_FILE="$SESSION_REPORT_DIR/$(basename "$TARGET")_$(date +%Y%m%d_%H%M%S).txt"
       echo "FASFO Report — $(date)" > "$REPORT_FILE"
@@ -8601,6 +11746,7 @@ main() {
       echo -e "  ${W}Report :${NC} $REPORT_FILE"
 
       _run_selected_modules "$TARGET"
+      
       print_summary
 
     else
